@@ -1,6 +1,9 @@
 services:
   web:
-    build: .
+    container_name: signalmap-lora
+    build:
+      context: .
+      dockerfile: Dockerfile
     ports:
-      - "${PORT:-8080}:80"
+      - "5174:80"
     restart: unless-stopped

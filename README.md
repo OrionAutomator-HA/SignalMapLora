@@ -2,7 +2,9 @@
 
 Web app that ranks antenna sites inside a drawn map area using terrain line-of-sight and LoRa-style coverage.
 
-## Run on a server with Docker
+## Run on a server with Docker Compose
+
+The repo includes [`docker-compose.yml`](docker-compose.yml). Clone it, then start the stack:
 
 ```bash
 git clone https://github.com/OrionAutomator-HA/SignalMapLora.git
@@ -10,13 +12,7 @@ cd SignalMapLora
 docker compose up -d --build
 ```
 
-Open `http://YOUR_SERVER_IP:8080`
-
-Another host port:
-
-```bash
-PORT=80 docker compose up -d --build
-```
+Open `http://YOUR_SERVER_IP:5174`, or point Nginx Proxy Manager at that host and port.
 
 ```bash
 docker compose logs -f
