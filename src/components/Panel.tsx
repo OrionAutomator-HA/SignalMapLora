@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import type { BBox, ExistingNode, PlanMode, RadioParams, RankedSite } from '../types'
 import { MAX_REGION_KM, WARN_REGION_KM, bboxSizeKm } from '../lib/geo'
+import { usbSerialBlockReason } from '../lib/meshcore'
 import { HEATMAP_SPAN_DB, type OverlayStyle } from '../lib/overlay'
 
 type Props = {
