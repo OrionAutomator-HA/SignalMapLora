@@ -1,11 +1,13 @@
 import http from 'node:http'
 import net from 'node:net'
+import tls from 'node:tls'
 import crypto from 'node:crypto'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11'
 const PORT = Number(process.env.MESHCORE_BRIDGE_PORT || 8765)
+const waiting = new Map()
 
 export function isAllowedTarget(host, port) {
   if (!Number.isInteger(port) || port < 1 || port > 65535) return false
@@ -25,26 +27,29 @@ function wsAccept(key) {
   return crypto.createHash('sha1').update(key + GUID).digest('base64')
 }
 
-function encodeFrame(payload, opcode) {
-  const data = Buffer.isBuffer(payload) ? payload : Buffer.from(payload)
+function encodeFrame(payload, opcode, masked = false) {
+  const data = Buffer.isBuffer(payload) ? Buffer.from(payload) : Buffer.from(payload)
   const len = data.length
   let header
   if (len < 126) {
     header = Buffer.alloc(2)
     header[0] = 0x80 | opcode
-    header[1] = len
+    header[1] = (masked ? 0x80 : 0) | len
   } else if (len < 65536) {
     header = Buffer.alloc(4)
     header[0] = 0x80 | opcode
-    header[1] = 126
+    header[1] = (masked ? 0x80 : 0) | 126
     header.writeUInt16BE(len, 2)
   } else {
     header = Buffer.alloc(10)
     header[0] = 0x80 | opcode
-    header[1] = 127
+    header[1] = (masked ? 0x80 : 0) | 127
     header.writeBigUInt64BE(BigInt(len), 2)
   }
-  return Buffer.concat([header, data])
+  if (!masked) return Buffer.concat([header, data])
+  const mask = crypto.randomBytes(4)
+  for (let i = 0; i < data.length; i++) data[i] ^= mask[i % 4]
+  return Buffer.concat([header, mask, data])
 }
 
 function decodeFrames(buf) {
@@ -83,12 +88,25 @@ function decodeFrames(buf) {
   return { frames, rest: buf.subarray(offset) }
 }
 
-function sendJson(socket, obj) {
-  socket.write(encodeFrame(JSON.stringify(obj), 1))
+function sendJson(socket, obj, masked = false) {
+  socket.write(encodeFrame(JSON.stringify(obj), 1, masked))
 }
 
-function attachSocket(socket) {
-  let buf = Buffer.alloc(0)
+function tcpErrorMessage(host, port, err, fromPc) {
+  const code = err && typeof err === 'object' && 'code' in err ? String(err.code) : ''
+  if (code === 'ETIMEDOUT' || code === 'EHOSTUNREACH' || code === 'ENETUNREACH') {
+    return fromPc
+      ? `This PC could not reach ${host}:${port}. Check the IP, that companion_radio_wifi is on, and that this PowerShell window is running on the same LAN as the radio.`
+      : `The website server could not reach ${host}:${port}. The radio is on your home network; this public site cannot open that IP. Use USB, or the PC helper shown in the panel.`
+  }
+  if (code === 'ECONNREFUSED') {
+    return `Nothing accepted TCP on ${host}:${port}. Check companion_radio_wifi is running and the port (default 5000).`
+  }
+  return err instanceof Error ? err.message : 'TCP connect failed'
+}
+
+function startTcpBridge(socket, { masked = false, fromPc = false, firstSpec = null, initialBuf = null } = {}) {
+  let buf = initialBuf && initialBuf.length ? Buffer.from(initialBuf) : Buffer.alloc(0)
   let tcp = null
   let opened = false
 
@@ -105,7 +123,56 @@ function attachSocket(socket) {
     }
   }
 
-  socket.on('data', (chunk) => {
+  const openTcp = (spec) => {
+    const host = String(spec.host || '').trim()
+    const port = Number(spec.port)
+    if (!isAllowedTarget(host, port)) {
+      sendJson(
+        socket,
+        {
+          error:
+            'Only private IPv4 addresses are allowed (192.168/10/172.16–31), as numbers not names.',
+        },
+        masked,
+      )
+      closeAll()
+      return
+    }
+    opened = true
+    tcp = net.connect({ host, port })
+    tcp.setTimeout(8000)
+    tcp.on('connect', () => {
+      tcp.setTimeout(0)
+      sendJson(socket, { ok: true }, masked)
+    })
+    tcp.on('timeout', () => {
+      const err = new Error('timeout')
+      err.code = 'ETIMEDOUT'
+      tcp.destroy()
+      try {
+        sendJson(socket, { error: tcpErrorMessage(host, port, err, fromPc) }, masked)
+      } catch {
+        /* ignore */
+      }
+      closeAll()
+    })
+    tcp.on('data', (data) => {
+      socket.write(encodeFrame(data, 2, masked))
+    })
+    tcp.on('error', (err) => {
+      try {
+        sendJson(socket, { error: tcpErrorMessage(host, port, err, fromPc) }, masked)
+      } catch {
+        /* ignore */
+      }
+      closeAll()
+    })
+    tcp.on('close', () => closeAll())
+  }
+
+  if (firstSpec) openTcp(firstSpec)
+
+  const onChunk = (chunk) => {
     buf = Buffer.concat([buf, chunk])
     let frames
     try {
@@ -122,13 +189,13 @@ function attachSocket(socket) {
         return
       }
       if (frame.opcode === 9) {
-        socket.write(encodeFrame(frame.payload, 10))
+        socket.write(encodeFrame(frame.payload, 10, masked))
         continue
       }
       if (frame.opcode !== 1 && frame.opcode !== 2) continue
       if (!opened) {
         if (frame.opcode !== 1) {
-          sendJson(socket, { error: 'Send the radio IP as JSON first' })
+          sendJson(socket, { error: 'Send the radio IP as JSON first' }, masked)
           closeAll()
           return
         }
@@ -136,52 +203,124 @@ function attachSocket(socket) {
         try {
           spec = JSON.parse(frame.payload.toString('utf8'))
         } catch {
-          sendJson(socket, { error: 'Invalid JSON' })
+          sendJson(socket, { error: 'Invalid JSON' }, masked)
           closeAll()
           return
         }
-        const host = String(spec.host || '').trim()
-        const port = Number(spec.port)
-        if (!isAllowedTarget(host, port)) {
-          sendJson(socket, {
-            error:
-              'Only private IPv4 addresses are allowed (192.168/10/172.16–31), as numbers not names.',
-          })
-          closeAll()
-          return
-        }
-        opened = true
-        tcp = net.connect({ host, port, timeout: 8000 })
-        tcp.on('connect', () => {
-          tcp.setTimeout(0)
-          sendJson(socket, { ok: true })
-        })
-        tcp.on('data', (data) => {
-          socket.write(encodeFrame(data, 2))
-        })
-        tcp.on('error', (err) => {
-          const code = err && typeof err === 'object' && 'code' in err ? String(err.code) : ''
-          let message = err instanceof Error ? err.message : 'TCP connect failed'
-          if (code === 'ETIMEDOUT' || code === 'EHOSTUNREACH' || code === 'ENETUNREACH') {
-            message = `The website host could not reach ${host}:${port}. That only works if the MeshCore radio is on the same network as this server. Use USB from this PC, or run the app on a machine on your LAN.`
-          } else if (code === 'ECONNREFUSED') {
-            message = `Nothing accepted TCP on ${host}:${port}. Check companion_radio_wifi is running and the port (default 5000).`
-          }
-          try {
-            sendJson(socket, { error: message })
-          } catch {
-            /* ignore */
-          }
-          closeAll()
-        })
-        tcp.on('close', () => closeAll())
+        openTcp(spec)
         continue
       }
       if (tcp && frame.opcode === 2) tcp.write(frame.payload)
     }
-  })
+  }
+
+  socket.on('data', onChunk)
   socket.on('error', closeAll)
   socket.on('close', closeAll)
+  if (buf.length) onChunk(Buffer.alloc(0))
+}
+
+function bindRelay(a, b) {
+  const pump = (from, to) => {
+    let buf = Buffer.alloc(0)
+    from.on('data', (chunk) => {
+      buf = Buffer.concat([buf, chunk])
+      try {
+        const decoded = decodeFrames(buf)
+        buf = decoded.rest
+        for (const frame of decoded.frames) {
+          if (frame.opcode === 8) {
+            from.destroy()
+            to.destroy()
+            return
+          }
+          to.write(encodeFrame(frame.payload, frame.opcode))
+        }
+      } catch {
+        from.destroy()
+        to.destroy()
+      }
+    })
+    from.on('close', () => to.destroy())
+    from.on('error', () => to.destroy())
+  }
+  pump(a, b)
+  pump(b, a)
+}
+
+function handleClient(socket) {
+  let buf = Buffer.alloc(0)
+  const onData = (chunk) => {
+    buf = Buffer.concat([buf, chunk])
+    let decoded
+    try {
+      decoded = decodeFrames(buf)
+    } catch {
+      socket.destroy()
+      return
+    }
+    buf = decoded.rest
+    for (const frame of decoded.frames) {
+      if (frame.opcode === 8) {
+        socket.destroy()
+        return
+      }
+      if (frame.opcode !== 1) continue
+      let msg
+      try {
+        msg = JSON.parse(frame.payload.toString('utf8'))
+      } catch {
+        sendJson(socket, { error: 'Invalid JSON' })
+        socket.destroy()
+        return
+      }
+      socket.off('data', onData)
+      if (buf.length) socket.unshift(buf)
+
+      if (msg.role === 'browser') {
+        const session = crypto.randomBytes(16).toString('hex')
+        const timer = setTimeout(() => {
+          waiting.delete(session)
+          try {
+            sendJson(socket, { error: 'Timed out waiting for the helper on your PC.' })
+          } catch {
+            /* ignore */
+          }
+          socket.destroy()
+        }, 180000)
+        waiting.set(session, { browser: socket, timer })
+        socket.on('close', () => {
+          const w = waiting.get(session)
+          if (w?.browser === socket) {
+            clearTimeout(w.timer)
+            waiting.delete(session)
+          }
+        })
+        sendJson(socket, { session })
+        return
+      }
+
+      if (msg.role === 'agent') {
+        const session = String(msg.session || '')
+        const w = waiting.get(session)
+        if (!w) {
+          sendJson(socket, { error: 'Unknown or expired helper session. Click Connect IP again.' })
+          socket.destroy()
+          return
+        }
+        clearTimeout(w.timer)
+        waiting.delete(session)
+        bindRelay(w.browser, socket)
+        sendJson(w.browser, { agentReady: true })
+        return
+      }
+
+      startTcpBridge(socket, { firstSpec: msg, fromPc: false, initialBuf: buf })
+      return
+    }
+  }
+  socket.on('data', onData)
+  socket.on('error', () => socket.destroy())
 }
 
 export function attachMeshcoreBridge(httpServer) {
@@ -202,16 +341,91 @@ export function attachMeshcoreBridge(httpServer) {
         '\r\n',
     )
     if (head && head.length) socket.unshift(head)
-    attachSocket(socket)
+    handleClient(socket)
   })
+}
+
+function argValue(flag) {
+  const i = process.argv.indexOf(flag)
+  return i >= 0 ? String(process.argv[i + 1] || '') : ''
+}
+
+async function connectWsClient(urlStr) {
+  const u = new URL(urlStr)
+  const isTls = u.protocol === 'wss:'
+  const port = Number(u.port || (isTls ? 443 : 80))
+  const socket = await new Promise((resolve, reject) => {
+    const onErr = (err) => reject(err)
+    const s = isTls
+      ? tls.connect({ host: u.hostname, port, servername: u.hostname }, () => {
+          s.off('error', onErr)
+          resolve(s)
+        })
+      : net.connect({ host: u.hostname, port }, () => {
+          s.off('error', onErr)
+          resolve(s)
+        })
+    s.on('error', onErr)
+  })
+  const key = crypto.randomBytes(16).toString('base64')
+  const reqPath = `${u.pathname || '/meshcore-bridge'}${u.search}`
+  await new Promise((resolve, reject) => {
+    let acc = Buffer.alloc(0)
+    const onData = (chunk) => {
+      acc = Buffer.concat([acc, chunk])
+      const idx = acc.indexOf('\r\n\r\n')
+      if (idx < 0) return
+      socket.off('data', onData)
+      const head = acc.subarray(0, idx).toString('utf8')
+      const rest = acc.subarray(idx + 4)
+      if (!/^HTTP\/1\.\d 101/i.test(head)) {
+        reject(new Error(head.split('\r\n')[0] || 'WebSocket upgrade failed'))
+        return
+      }
+      if (rest.length) socket.unshift(rest)
+      resolve()
+    }
+    socket.on('data', onData)
+    socket.on('error', reject)
+    socket.write(
+      `GET ${reqPath} HTTP/1.1\r\n` +
+        `Host: ${u.host}\r\n` +
+        'Upgrade: websocket\r\n' +
+        'Connection: Upgrade\r\n' +
+        'Sec-WebSocket-Version: 13\r\n' +
+        `Sec-WebSocket-Key: ${key}\r\n` +
+        '\r\n',
+    )
+  })
+  return socket
+}
+
+async function runAgent(url, session) {
+  const socket = await connectWsClient(url)
+  sendJson(socket, { role: 'agent', session }, true)
+  startTcpBridge(socket, { masked: true, fromPc: true })
+  console.log('meshcore PC helper connected; waiting for the browser to send the radio IP')
+  await new Promise((resolve) => socket.on('close', resolve))
 }
 
 const startedDirectly =
   process.argv.includes('--listen') ||
+  process.argv.includes('--agent') ||
   (Boolean(process.argv[1]) &&
     path.resolve(fileURLToPath(import.meta.url)) === path.resolve(process.argv[1]))
 
-if (startedDirectly) {
+if (startedDirectly && process.argv.includes('--agent')) {
+  const session = argValue('--session')
+  const url = argValue('--url')
+  if (!session || !url) {
+    console.error('Usage: node meshcore-bridge.mjs --agent --session <id> --url wss://host/meshcore-bridge')
+    process.exit(1)
+  }
+  runAgent(url, session).catch((err) => {
+    console.error(err instanceof Error ? err.message : err)
+    process.exit(1)
+  })
+} else if (startedDirectly) {
   const server = http.createServer((_req, res) => {
     res.writeHead(200)
     res.end('meshcore-bridge')

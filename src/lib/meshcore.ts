@@ -354,18 +354,52 @@ async function runSessionOnTcp(tcp: TcpOpened): Promise<ExistingNode[]> {
   }
 }
 
-async function openSiteTcpBridge(host: string, port: number): Promise<TcpOpened> {
+function siteHelperCanUseServerLan(): boolean {
+  const h = window.location.hostname
+  return h === 'localhost' || h === '127.0.0.1' || h === '[::1]'
+}
+
+export function meshPcHelperCommand(session: string): string {
+  const ps1 = `${window.location.origin}/meshcore-pc-helper.ps1`
+  const ws = `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}/meshcore-bridge`
+  const inner =
+    "$c=(Invoke-WebRequest -UseBasicParsing '" +
+    ps1 +
+    "').Content; & ([scriptblock]::Create($c)) -Session '" +
+    session +
+    "' -Url '" +
+    ws +
+    "'"
+  return 'powershell -NoProfile -ExecutionPolicy Bypass -Command "' + inner + '"'
+}
+
+type BridgeHooks = {
+  viaServerLan?: boolean
+  onHelperCommand?: (command: string) => void
+}
+
+async function openSiteTcpBridge(host: string, port: number, hooks?: BridgeHooks): Promise<TcpOpened> {
   const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
   const ws = new WebSocket(`${proto}//${window.location.host}/meshcore-bridge`)
   ws.binaryType = 'arraybuffer'
   const incoming = new TransformStream<Uint8Array, Uint8Array>()
   const inWriter = incoming.writable.getWriter()
+  const usePcHelper = !hooks?.viaServerLan && !siteHelperCanUseServerLan()
 
   await new Promise<void>((resolve, reject) => {
-    const timer = window.setTimeout(() => {
-      ws.close()
-      reject(new Error('Timed out connecting through this site to the radio'))
-    }, 15000)
+    const timer = window.setTimeout(
+      () => {
+        ws.close()
+        reject(
+          new Error(
+            usePcHelper
+              ? 'Timed out waiting for the helper on this PC. Paste the PowerShell command, leave that window open, then try Connect IP again if needed.'
+              : 'Timed out connecting through this site to the radio',
+          ),
+        )
+      },
+      usePcHelper ? 180000 : 15000,
+    )
     ws.addEventListener('error', () => {
       window.clearTimeout(timer)
       reject(
@@ -375,13 +409,19 @@ async function openSiteTcpBridge(host: string, port: number): Promise<TcpOpened>
       )
     })
     ws.addEventListener('open', () => {
-      ws.send(JSON.stringify({ host, port }))
+      if (usePcHelper) ws.send(JSON.stringify({ role: 'browser' }))
+      else ws.send(JSON.stringify({ host, port }))
     })
     ws.addEventListener('message', (event: MessageEvent) => {
       if (typeof event.data === 'string') {
-        let msg: { ok?: boolean; error?: string }
+        let msg: { ok?: boolean; error?: string; session?: string; agentReady?: boolean }
         try {
-          msg = JSON.parse(event.data) as { ok?: boolean; error?: string }
+          msg = JSON.parse(event.data) as {
+            ok?: boolean
+            error?: string
+            session?: string
+            agentReady?: boolean
+          }
         } catch {
           return
         }
@@ -389,6 +429,14 @@ async function openSiteTcpBridge(host: string, port: number): Promise<TcpOpened>
           window.clearTimeout(timer)
           ws.close()
           reject(new Error(msg.error))
+          return
+        }
+        if (msg.session) {
+          hooks?.onHelperCommand?.(meshPcHelperCommand(msg.session))
+          return
+        }
+        if (msg.agentReady) {
+          ws.send(JSON.stringify({ host, port }))
           return
         }
         if (msg.ok) {
@@ -421,10 +469,14 @@ async function openSiteTcpBridge(host: string, port: number): Promise<TcpOpened>
   }
 }
 
-export async function importRepeatersOverIp(host: string, port: number): Promise<ExistingNode[]> {
+export async function importRepeatersOverIp(
+  host: string,
+  port: number,
+  hooks?: BridgeHooks,
+): Promise<ExistingNode[]> {
   const h = host.trim()
   const p = Math.min(65535, Math.max(1, Math.round(port) || 5000))
   if (!h) throw new Error('Enter the radio IP address')
-  const tcp = (await openDirectTcp(h, p)) ?? (await openSiteTcpBridge(h, p))
+  const tcp = (await openDirectTcp(h, p)) ?? (await openSiteTcpBridge(h, p, hooks))
   return runSessionOnTcp(tcp)
 }

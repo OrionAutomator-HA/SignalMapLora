@@ -36,7 +36,8 @@ type Props = {
   coveredKm2: number | null
   meshNodes: ExistingNode[]
   onUsbImport: () => void
-  onIpImport: (host: string, port: number) => void
+  onIpImport: (host: string, port: number, viaServerLan: boolean) => void
+  helperCommand: string | null
 }
 
 const PRESETS = {
@@ -113,6 +114,7 @@ export function Panel({
   meshNodes,
   onUsbImport,
   onIpImport,
+  helperCommand,
 }: Props) {
   const size = bbox ? bboxSizeKm(bbox) : null
   const tooBig = size ? size.maxSideKm > MAX_REGION_KM : false
@@ -122,6 +124,7 @@ export function Panel({
   const [addLon, setAddLon] = useState('')
   const [meshHost, setMeshHost] = useState('')
   const [meshPort, setMeshPort] = useState('5000')
+  const [viaServerLan, setViaServerLan] = useState(false)
 
   return (
     <aside className="panel">
@@ -443,9 +446,9 @@ export function Panel({
         <section>
           <h2>Companion radio</h2>
           <p className="experimental">
-            Experimental. Talks to MeshCore companion firmware. USB uses this
-            browser (Chrome/Edge). IP is relayed through this website’s server, so
-            the radio must be on the same network as the server — not only your PC.
+            Experimental. USB talks to the radio from this browser (Chrome/Edge).
+            IP on a public site cannot use your home 192.168 address from the web
+            server — run the PowerShell helper on this PC so TCP stays on your LAN.
             Only saved repeater and room-server contacts with coordinates are
             plotted. Coverage is a generic terrain estimate, not a live RF survey.
           </p>
@@ -458,11 +461,11 @@ export function Panel({
             </button>
           </div>
           {usbBlock && <p className="warn">{usbBlock}</p>}
-          <p className="muted">Or companion_radio_wifi IPv4 on this server’s LAN (port 5000):</p>
+          <p className="muted">Or companion_radio_wifi IPv4 on this PC’s LAN (port 5000):</p>
           <div className="coord-row">
             <input
               type="text"
-              placeholder="IP or hostname"
+              placeholder="192.168.x.x"
               value={meshHost}
               onChange={(e) => setMeshHost(e.target.value)}
             />
@@ -476,11 +479,34 @@ export function Panel({
             <button
               type="button"
               disabled={busy}
-              onClick={() => onIpImport(meshHost, Number(meshPort))}
+              onClick={() => onIpImport(meshHost, Number(meshPort), viaServerLan)}
             >
               Connect IP
             </button>
           </div>
+          <label className="check">
+            <input
+              type="checkbox"
+              checked={viaServerLan}
+              onChange={(e) => setViaServerLan(e.target.checked)}
+            />
+            Radio is on the website server’s LAN (not this PC)
+          </label>
+          {helperCommand && (
+            <div className="helper-box">
+              <p className="warn">
+                Paste this in PowerShell on this PC and leave that window open. It
+                opens the radio from your LAN; the website only forwards bytes.
+              </p>
+              <textarea className="helper-cmd" readOnly rows={5} value={helperCommand} />
+              <button
+                type="button"
+                onClick={() => void navigator.clipboard.writeText(helperCommand)}
+              >
+                Copy helper command
+              </button>
+            </div>
+          )}
           {meshNodes.length > 0 && (
             <ul className="results">
               {meshNodes.map((node, i) => (

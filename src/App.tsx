@@ -53,6 +53,7 @@ export default function App() {
   const [probe, setProbe] = useState<ExistingNode | null>(null)
   const [coveredKm2, setCoveredKm2] = useState<number | null>(null)
   const [meshNodes, setMeshNodes] = useState<ExistingNode[]>([])
+  const [helperCommand, setHelperCommand] = useState<string | null>(null)
   const fineGridRef = useRef<Awaited<ReturnType<typeof loadDemGrid>> | null>(null)
   const workerRef = useRef<Worker | null>(null)
   const jobRef = useRef(0)
@@ -182,6 +183,7 @@ export default function App() {
     setOverlayUrl(null)
     setCoveredKm2(null)
     setProgress('Talking to MeshCore radio…')
+    setHelperCommand(null)
     try {
       const nodes = await loader()
       if (!nodes.length) {
@@ -454,7 +456,18 @@ export default function App() {
         coveredKm2={coveredKm2}
         meshNodes={meshNodes}
         onUsbImport={() => void importMesh(() => importRepeatersOverUsb())}
-        onIpImport={(host, port) => void importMesh(() => importRepeatersOverIp(host, port))}
+        onIpImport={(host, port, viaServerLan) =>
+          void importMesh(() =>
+            importRepeatersOverIp(host, port, {
+              viaServerLan,
+              onHelperCommand: (command) => {
+                setHelperCommand(command)
+                setProgress('Waiting for the PowerShell helper on this PC…')
+              },
+            }),
+          )
+        }
+        helperCommand={helperCommand}
       />
       <MapView
         drawing={drawing}

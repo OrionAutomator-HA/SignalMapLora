@@ -236,6 +236,23 @@ button.primary,
   font: inherit;
 }
 
+.helper-box {
+  margin: 10px 0 12px;
+}
+
+.helper-cmd {
+  width: 100%;
+  box-sizing: border-box;
+  margin: 8px 0;
+  font: 0.72rem/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  background: #12141c;
+  color: #d7dce8;
+  border: 1px solid #3a4154;
+  border-radius: 8px;
+  padding: 8px;
+  resize: vertical;
+}
+
 .existing-row {
   display: flex;
   flex-direction: row;
