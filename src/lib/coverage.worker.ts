@@ -1,5 +1,4 @@
-import { scoreCoverage } from './coverage'
-import { latLonToColRow } from './geo'
+import { fillCoverageMask } from './coverage'
 import { collectCandidates, rankCandidates, refineTopSites } from './search'
 import type { WorkerRequest, WorkerResponse } from './workerMessages'
 
@@ -16,7 +15,7 @@ self.onmessage = (event: MessageEvent<WorkerRequest>) => {
       } satisfies WorkerResponse)
 
       const wanted = Math.min(40, Math.max(1, Math.round(msg.siteCount) || 10))
-      const pool = Math.min(80, Math.max(wanted * 4, wanted + 8))
+      const pool = Math.min(80, Math.max(wanted * 5, wanted + 8))
       const peaks = collectCandidates(msg.coarse, pool, msg.searchBbox)
       const coarseRanked = rankCandidates(
         msg.coarse,
@@ -60,7 +59,7 @@ self.onmessage = (event: MessageEvent<WorkerRequest>) => {
       const best = sites[0]
       const mask = new Uint8Array(msg.fine.cols * msg.fine.rows)
       if (best) {
-        scoreCoverage(msg.fine, best.col, best.row, msg.radio, mask, msg.searchBbox)
+        fillCoverageMask(msg.fine, best.lat, best.lon, msg.radio, mask)
       }
 
       const response: WorkerResponse = {
@@ -76,9 +75,8 @@ self.onmessage = (event: MessageEvent<WorkerRequest>) => {
     }
 
     if (msg.type === 'coverage') {
-      const { col, row } = latLonToColRow(msg.grid, msg.lat, msg.lon)
       const mask = new Uint8Array(msg.grid.cols * msg.grid.rows)
-      scoreCoverage(msg.grid, col, row, msg.radio, mask)
+      fillCoverageMask(msg.grid, msg.lat, msg.lon, msg.radio, mask)
       self.postMessage({
         type: 'coverage',
         jobId,

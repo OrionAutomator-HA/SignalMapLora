@@ -1,5 +1,11 @@
 import type { BBox, DemGrid, RadioParams } from '../types'
-import { EARTH_RADIUS_M, cellAreaKm2, cellMeters, colRowToLatLon, pointInBBox } from './geo'
+import {
+  EARTH_RADIUS_M,
+  bboxSizeKm,
+  cellMeters,
+  colRowToLatLon,
+  latLonToColRowFloat,
+} from './geo'
 
 export function fsplDbm(distanceM: number, frequencyMhz: number): number {
   const dKm = Math.max(distanceM, 1) / 1000
@@ -18,7 +24,7 @@ export function maxRangeM(radio: RadioParams): number {
   return Math.min(Math.max(dKm, 0.05) * 1000, 200_000)
 }
 
-function sampleElev(grid: DemGrid, col: number, row: number): number {
+export function sampleElev(grid: DemGrid, col: number, row: number): number {
   const c = Math.min(grid.cols - 1, Math.max(0, col))
   const r = Math.min(grid.rows - 1, Math.max(0, row))
   const c0 = Math.floor(c)
@@ -32,6 +38,11 @@ function sampleElev(grid: DemGrid, col: number, row: number): number {
   const e01 = grid.elev[r1 * grid.cols + c0]
   const e11 = grid.elev[r1 * grid.cols + c1]
   return e00 * (1 - fc) * (1 - fr) + e10 * fc * (1 - fr) + e01 * (1 - fc) * fr + e11 * fc * fr
+}
+
+export function sampleElevAtLatLon(grid: DemGrid, lat: number, lon: number): number {
+  const { col, row } = latLonToColRowFloat(grid, lat, lon)
+  return sampleElev(grid, col, row)
 }
 
 export function pathClear(
@@ -69,77 +80,100 @@ export type CoverageScore = {
   coveredPct: number
 }
 
-export function scoreCoverage(
+function linkCovered(
   grid: DemGrid,
   txCol: number,
   txRow: number,
+  rxCol: number,
+  rxRow: number,
   radio: RadioParams,
-  mask?: Uint8Array,
-  scoreBbox?: BBox,
+  mPerCol: number,
+  mPerRow: number,
+  twoKR: number,
+  rangeM: number,
+): boolean {
+  const distM = Math.hypot((rxCol - txCol) * mPerCol, (rxRow - txRow) * mPerRow)
+  if (distM < 2) return true
+  if (distM > rangeM) return false
+  const rssi =
+    radio.txPowerDbm +
+    radio.txGainDbi +
+    radio.rxGainDbi -
+    fsplDbm(distM, radio.frequencyMhz)
+  if (rssi < radio.cutoffDbm) return false
+  const txAmsl = sampleElev(grid, txCol, txRow) + radio.txHeightM
+  const rxAmsl = sampleElev(grid, rxCol, rxRow) + radio.rxHeightM
+  return pathClear(grid, txCol, txRow, rxCol, rxRow, txAmsl, rxAmsl, mPerCol, mPerRow, twoKR)
+}
+
+export function scoreSearchArea(
+  grid: DemGrid,
+  txLat: number,
+  txLon: number,
+  searchBbox: BBox,
+  radio: RadioParams,
 ): CoverageScore {
   const { mPerCol, mPerRow } = cellMeters(grid)
   const twoKR = 2 * radio.kFactor * EARTH_RADIUS_M
   const rangeM = maxRangeM(radio)
-  const area = cellAreaKm2(grid)
-  const txIdx = txRow * grid.cols + txCol
-  const txAmsl = grid.elev[txIdx] + radio.txHeightM
+  const tx = latLonToColRowFloat(grid, txLat, txLon)
+  const { widthKm, heightKm } = bboxSizeKm(searchBbox)
+  const area = widthKm * heightKm
+  const samples = 20
   let covered = 0
-  let scoreTotal = 0
+  let total = 0
+  for (let r = 0; r < samples; r++) {
+    const lat =
+      searchBbox.south + ((r + 0.5) / samples) * (searchBbox.north - searchBbox.south)
+    for (let c = 0; c < samples; c++) {
+      const lon =
+        searchBbox.west + ((c + 0.5) / samples) * (searchBbox.east - searchBbox.west)
+      total++
+      const rx = latLonToColRowFloat(grid, lat, lon)
+      if (
+        linkCovered(grid, tx.col, tx.row, rx.col, rx.row, radio, mPerCol, mPerRow, twoKR, rangeM)
+      ) {
+        covered++
+      }
+    }
+  }
+  return {
+    coveredCells: covered,
+    coveredKm2: total === 0 ? 0 : (area * covered) / total,
+    coveredPct: total === 0 ? 0 : (100 * covered) / total,
+  }
+}
 
+export function fillCoverageMask(
+  grid: DemGrid,
+  txLat: number,
+  txLon: number,
+  radio: RadioParams,
+  mask: Uint8Array,
+): void {
+  const { mPerCol, mPerRow } = cellMeters(grid)
+  const twoKR = 2 * radio.kFactor * EARTH_RADIUS_M
+  const rangeM = maxRangeM(radio)
+  const tx = latLonToColRowFloat(grid, txLat, txLon)
   for (let r = 0; r < grid.rows; r++) {
     for (let c = 0; c < grid.cols; c++) {
       const i = r * grid.cols + c
       const { lat, lon } = colRowToLatLon(grid, c, r)
-      const inScore = !scoreBbox || pointInBBox(lat, lon, scoreBbox)
-      if (inScore) scoreTotal++
-
-      if (!mask && !inScore) continue
-
-      if (c === txCol && r === txRow) {
-        if (inScore) covered++
-        if (mask) mask[i] = 1
-        continue
-      }
-      const distM = Math.hypot((c - txCol) * mPerCol, (r - txRow) * mPerRow)
-      if (distM > rangeM) {
-        if (mask) mask[i] = 0
-        continue
-      }
-      const rxAmsl = grid.elev[i] + radio.rxHeightM
-      const rssi =
-        radio.txPowerDbm +
-        radio.txGainDbi +
-        radio.rxGainDbi -
-        fsplDbm(distM, radio.frequencyMhz)
-      if (rssi < radio.cutoffDbm) {
-        if (mask) mask[i] = 0
-        continue
-      }
-      const ok = pathClear(
+      const rx = latLonToColRowFloat(grid, lat, lon)
+      mask[i] = linkCovered(
         grid,
-        txCol,
-        txRow,
-        c,
-        r,
-        txAmsl,
-        rxAmsl,
+        tx.col,
+        tx.row,
+        rx.col,
+        rx.row,
+        radio,
         mPerCol,
         mPerRow,
         twoKR,
+        rangeM,
       )
-      if (ok) {
-        if (inScore) covered++
-        if (mask) mask[i] = 1
-      } else if (mask) {
-        mask[i] = 0
-      }
+        ? 1
+        : 0
     }
-  }
-
-  const total = scoreBbox ? scoreTotal : grid.cols * grid.rows
-  return {
-    coveredCells: covered,
-    coveredKm2: covered * area,
-    coveredPct: total === 0 ? 0 : (100 * covered) / total,
   }
 }

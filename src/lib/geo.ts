@@ -62,6 +62,16 @@ export function colRowToLatLon(
   return { lat, lon }
 }
 
+export function latLonToColRowFloat(
+  grid: Pick<DemGrid, 'cols' | 'rows' | 'west' | 'south' | 'east' | 'north'>,
+  lat: number,
+  lon: number,
+): { col: number; row: number } {
+  const col = ((lon - grid.west) / (grid.east - grid.west)) * grid.cols - 0.5
+  const row = ((grid.north - lat) / (grid.north - grid.south)) * grid.rows - 0.5
+  return { col, row }
+}
+
 export function latLonToColRow(
   grid: Pick<DemGrid, 'cols' | 'rows' | 'west' | 'south' | 'east' | 'north'>,
   lat: number,

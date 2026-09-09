@@ -1,58 +1,41 @@
 import type { BBox, DemGrid, RadioParams, RankedSite } from '../types'
-import { bboxCellRange, colRowToLatLon } from './geo'
-import { scoreCoverage } from './coverage'
+import { bboxSizeKm, latLonToColRow } from './geo'
+import { sampleElevAtLatLon, scoreSearchArea } from './coverage'
 
-type Peak = { col: number; row: number; elev: number }
+type Peak = { lat: number; lon: number; elev: number }
 
-function isLocalMax(
-  grid: DemGrid,
-  col: number,
-  row: number,
-  radius: number,
-  col0: number,
-  col1: number,
-  row0: number,
-  row1: number,
-): boolean {
-  const e = grid.elev[row * grid.cols + col]
-  for (let dr = -radius; dr <= radius; dr++) {
-    for (let dc = -radius; dc <= radius; dc++) {
-      if (dc === 0 && dr === 0) continue
-      const c = col + dc
-      const r = row + dr
-      if (c < col0 || r < row0 || c > col1 || r > row1) continue
-      if (grid.elev[r * grid.cols + c] > e) return false
-    }
-  }
-  return true
-}
-
-function thinPeaks(peaks: Peak[], minSep: number, limit: number): Peak[] {
+function thinByMeters(peaks: Peak[], minSepM: number, limit: number): Peak[] {
   const chosen: Peak[] = []
-  const sep2 = minSep * minSep
+  const sep2 = minSepM * minSepM
   for (const p of peaks) {
-    if (chosen.some((q) => (q.col - p.col) ** 2 + (q.row - p.row) ** 2 < sep2)) {
-      continue
-    }
+    const tooClose = chosen.some((q) => {
+      const dLat = (q.lat - p.lat) * 110_574
+      const dLon = (q.lon - p.lon) * 111_320 * Math.cos((p.lat * Math.PI) / 180)
+      return dLat * dLat + dLon * dLon < sep2
+    })
+    if (tooClose) continue
     chosen.push(p)
     if (chosen.length >= limit) break
   }
   return chosen
 }
 
-function searchExtent(
-  grid: DemGrid,
-  searchBbox?: BBox,
-): { col0: number; col1: number; row0: number; row1: number } {
-  if (!searchBbox) {
-    return {
-      col0: 0,
-      col1: grid.cols - 1,
-      row0: 0,
-      row1: grid.rows - 1,
+function sampleGrid(bbox: BBox, n: number): { lat: number; lon: number }[] {
+  const pts: { lat: number; lon: number }[] = []
+  const latPad = (bbox.north - bbox.south) * 0.04
+  const lonPad = (bbox.east - bbox.west) * 0.04
+  const south = bbox.south + latPad
+  const north = bbox.north - latPad
+  const west = bbox.west + lonPad
+  const east = bbox.east - lonPad
+  for (let r = 0; r < n; r++) {
+    const lat = south + ((r + 0.5) / n) * (north - south)
+    for (let c = 0; c < n; c++) {
+      const lon = west + ((c + 0.5) / n) * (east - west)
+      pts.push({ lat, lon })
     }
   }
-  return bboxCellRange(grid, searchBbox)
+  return pts
 }
 
 export function collectCandidates(
@@ -60,56 +43,85 @@ export function collectCandidates(
   maxCount: number,
   searchBbox?: BBox,
 ): Peak[] {
-  const { col0, col1, row0, row1 } = searchExtent(grid, searchBbox)
-  const inside: Peak[] = []
-  let elevMin = Infinity
-  let elevMax = -Infinity
-
-  for (let r = row0; r <= row1; r++) {
-    for (let c = col0; c <= col1; c++) {
-      const elev = grid.elev[r * grid.cols + c]
-      inside.push({ col: c, row: r, elev })
-      elevMin = Math.min(elevMin, elev)
-      elevMax = Math.max(elevMax, elev)
+  if (!searchBbox) {
+    const pts: Peak[] = []
+    for (let r = 1; r < grid.rows - 1; r++) {
+      for (let c = 1; c < grid.cols - 1; c++) {
+        const { lat, lon } = {
+          lon: grid.west + ((c + 0.5) / grid.cols) * (grid.east - grid.west),
+          lat: grid.north - ((r + 0.5) / grid.rows) * (grid.north - grid.south),
+        }
+        pts.push({ lat, lon, elev: grid.elev[r * grid.cols + c] })
+      }
     }
+    pts.sort((a, b) => b.elev - a.elev)
+    return thinByMeters(pts, 400, maxCount)
   }
 
-  if (inside.length === 0) return []
+  const n = Math.min(28, Math.max(8, Math.ceil(Math.sqrt(maxCount * 8))))
+  const coords = sampleGrid(searchBbox, n)
+  const cells: Peak[] = coords.map(({ lat, lon }) => ({
+    lat,
+    lon,
+    elev: sampleElevAtLatLon(grid, lat, lon),
+  }))
 
-  const hiCut = elevMin + 0.55 * (elevMax - elevMin || 1)
+  let elevMin = Infinity
+  let elevMax = -Infinity
+  for (const cell of cells) {
+    elevMin = Math.min(elevMin, cell.elev)
+    elevMax = Math.max(elevMax, cell.elev)
+  }
+  const hiCut = elevMin + 0.45 * (elevMax - elevMin || 1)
   const local: Peak[] = []
   const high: Peak[] = []
-  for (const cell of inside) {
-    if (isLocalMax(grid, cell.col, cell.row, 1, col0, col1, row0, row1)) {
-      local.push(cell)
-    } else if (cell.elev >= hiCut) {
-      high.push(cell)
+  for (let i = 0; i < cells.length; i++) {
+    const r = Math.floor(i / n)
+    const c = i % n
+    const e = cells[i].elev
+    let isMax = true
+    for (let dr = -1; dr <= 1 && isMax; dr++) {
+      for (let dc = -1; dc <= 1; dc++) {
+        if (dc === 0 && dr === 0) continue
+        const rr = r + dr
+        const cc = c + dc
+        if (rr < 0 || cc < 0 || rr >= n || cc >= n) continue
+        if (cells[rr * n + cc].elev > e) {
+          isMax = false
+          break
+        }
+      }
     }
+    if (isMax) local.push(cells[i])
+    else if (e >= hiCut) high.push(cells[i])
   }
 
   local.sort((a, b) => b.elev - a.elev)
   high.sort((a, b) => b.elev - a.elev)
-  inside.sort((a, b) => b.elev - a.elev)
+  cells.sort((a, b) => b.elev - a.elev)
 
-  const span = Math.max(col1 - col0 + 1, row1 - row0 + 1)
-  const minSep = Math.max(1, Math.round(span / 10))
-  const picked = thinPeaks([...local, ...high, ...inside], minSep, maxCount)
-  return picked.length > 0 ? picked : inside.slice(0, Math.min(maxCount, inside.length))
+  const { widthKm, heightKm } = bboxSizeKm(searchBbox)
+  const minSepM = Math.max(
+    40,
+    (Math.min(widthKm, heightKm) * 1000) / Math.max(2, Math.sqrt(maxCount) * 1.6),
+  )
+  const picked = thinByMeters([...local, ...high, ...cells], minSepM, maxCount)
+  return picked.length > 0 ? picked : cells.slice(0, maxCount)
 }
 
 function toSite(
   grid: DemGrid,
   peak: Peak,
-  score: ReturnType<typeof scoreCoverage>,
+  score: ReturnType<typeof scoreSearchArea>,
   rank: number,
 ): RankedSite {
-  const { lat, lon } = colRowToLatLon(grid, peak.col, peak.row)
+  const { col, row } = latLonToColRow(grid, peak.lat, peak.lon)
   return {
     rank,
-    lat,
-    lon,
-    col: peak.col,
-    row: peak.row,
+    lat: peak.lat,
+    lon: peak.lon,
+    col,
+    row,
     elevM: peak.elev,
     coveredKm2: score.coveredKm2,
     coveredPct: score.coveredPct,
@@ -124,13 +136,14 @@ export function rankCandidates(
   onProgress?: (done: number, total: number) => void,
   searchBbox?: BBox,
 ): RankedSite[] {
+  if (!searchBbox) return []
   const scored: RankedSite[] = []
   peaks.forEach((peak, i) => {
-    const score = scoreCoverage(grid, peak.col, peak.row, radio, undefined, searchBbox)
+    const score = scoreSearchArea(grid, peak.lat, peak.lon, searchBbox, radio)
     scored.push(toSite(grid, peak, score, 0))
     onProgress?.(i + 1, peaks.length)
   })
-  scored.sort((a, b) => b.coveredCells - a.coveredCells)
+  scored.sort((a, b) => b.coveredCells - a.coveredCells || b.elevM - a.elevM)
   return scored.map((s, i) => ({ ...s, rank: i + 1 }))
 }
 
@@ -143,39 +156,11 @@ export function refineTopSites(
   searchBbox?: BBox,
   limit = 10,
 ): RankedSite[] {
-  const seeds = coarseSites.slice(0, keep)
-  const extent = searchExtent(fine, searchBbox)
-  const radius = Math.max(
-    1,
-    Math.round(Math.max(extent.col1 - extent.col0, extent.row1 - extent.row0) / 16),
-  )
-  const seen = new Set<string>()
-  const peaks: Peak[] = []
-
-  for (const site of seeds) {
-    const { lat, lon } = site
-    const col0 = Math.round(((lon - fine.west) / (fine.east - fine.west)) * fine.cols)
-    const row0 = Math.round(((fine.north - lat) / (fine.north - fine.south)) * fine.rows)
-    for (let r = row0 - radius; r <= row0 + radius; r++) {
-      for (let c = col0 - radius; c <= col0 + radius; c++) {
-        if (c < extent.col0 || r < extent.row0 || c > extent.col1 || r > extent.row1) continue
-        const key = `${c},${r}`
-        if (seen.has(key)) continue
-        if (
-          !isLocalMax(fine, c, r, 1, extent.col0, extent.col1, extent.row0, extent.row1) &&
-          (c !== col0 || r !== row0)
-        ) {
-          continue
-        }
-        seen.add(key)
-        peaks.push({ col: c, row: r, elev: fine.elev[r * fine.cols + c] })
-      }
-    }
-  }
-
-  if (peaks.length === 0) {
-    return coarseSites.slice(0, limit)
-  }
-
-  return rankCandidates(fine, peaks, radio, onProgress, searchBbox).slice(0, limit)
+  if (!searchBbox) return coarseSites.slice(0, limit)
+  const seeds = coarseSites.slice(0, Math.max(keep, limit))
+  const extra = collectCandidates(fine, Math.min(80, Math.max(limit * 5, 24)), searchBbox)
+  const nearSeeds: Peak[] = seeds.map((s) => ({ lat: s.lat, lon: s.lon, elev: s.elevM }))
+  const merged = [...nearSeeds, ...extra]
+  if (merged.length === 0) return coarseSites.slice(0, limit)
+  return rankCandidates(fine, merged, radio, onProgress, searchBbox).slice(0, limit)
 }
