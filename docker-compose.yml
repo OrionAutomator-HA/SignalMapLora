@@ -9,6 +9,9 @@ services:
     restart: unless-stopped
     depends_on:
       - meshcore-bridge
+    networks:
+      - default
+      - proxy
 
   meshcore-bridge:
     container_name: signalmap-meshcore-bridge
@@ -18,3 +21,10 @@ services:
     restart: unless-stopped
     expose:
       - "8765"
+    networks:
+      - default
+
+networks:
+  proxy:
+    external: true
+    name: proxy
