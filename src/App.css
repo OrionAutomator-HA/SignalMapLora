@@ -184,6 +184,11 @@ button.primary,
   border-color: #8ff0c0;
 }
 
+.leaflet-container.is-drawing {
+  touch-action: none;
+  cursor: crosshair;
+}
+
 @media (max-width: 800px) {
   .app {
     flex-direction: column;
@@ -191,10 +196,14 @@ button.primary,
 
   .panel {
     width: 100%;
-    height: 46%;
+    height: 42%;
   }
 
   .map-canvas {
-    height: 54%;
+    height: 58%;
+  }
+
+  .field input {
+    font-size: 16px;
   }
 }

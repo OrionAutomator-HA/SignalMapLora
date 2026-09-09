@@ -94,12 +94,17 @@ export function Panel({
         <h2>Region</h2>
         <div className="row">
           <button type="button" className={drawing ? 'primary' : ''} onClick={onDraw} disabled={busy}>
-            {drawing ? 'Click and drag on the map' : 'Draw area'}
+            {drawing ? 'Tap two corners on the map' : 'Draw area'}
           </button>
           <button type="button" onClick={onClear} disabled={busy || (!bbox && sites.length === 0)}>
             Clear
           </button>
         </div>
+        {drawing && (
+          <p className="muted">
+            Tap one corner of the area, then tap the opposite corner. Same with a mouse click.
+          </p>
+        )}
         {size && (
           <p className="muted">
             {size.widthKm.toFixed(1)} × {size.heightKm.toFixed(1)} km

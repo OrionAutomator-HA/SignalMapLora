@@ -50,6 +50,7 @@ export function MapView({
     const map = L.map(containerRef.current, {
       zoomControl: true,
       attributionControl: true,
+      tapHold: false,
     }).setView([53.4, -1.8], 7)
 
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
@@ -75,40 +76,38 @@ export function MapView({
     if (drawing) {
       map.dragging.disable()
       map.boxZoom.disable()
+      map.doubleClickZoom.disable()
     } else {
       map.dragging.enable()
       map.boxZoom.enable()
+      map.doubleClickZoom.enable()
     }
 
-    let start: L.LatLng | null = null
+    let corner: L.LatLng | null = null
     let temp: L.Rectangle | null = null
+    let pin: L.CircleMarker | null = null
 
-    const onDown = (e: L.LeafletMouseEvent) => {
-      if (!drawing) return
-      L.DomEvent.preventDefault(e.originalEvent)
-      start = e.latlng
-      temp?.remove()
-      temp = L.rectangle(L.latLngBounds(start, start), {
-        color: '#3ecf8e',
-        weight: 2,
-        fillOpacity: 0.08,
-        dashArray: '6 4',
-      }).addTo(map)
+    const preview = (a: L.LatLng, b: L.LatLng) => {
+      const bounds = L.latLngBounds(a, b)
+      if (!temp) {
+        temp = L.rectangle(bounds, {
+          color: '#3ecf8e',
+          weight: 2,
+          fillOpacity: 0.08,
+          dashArray: '6 4',
+        }).addTo(map)
+      } else {
+        temp.setBounds(bounds)
+      }
     }
 
-    const onMove = (e: L.LeafletMouseEvent) => {
-      if (!drawing || !start || !temp) return
-      temp.setBounds(L.latLngBounds(start, e.latlng))
-    }
-
-    const onUp = (e: L.LeafletMouseEvent | MouseEvent) => {
-      if (!drawing || !start) return
-      const latlng =
-        'latlng' in e ? e.latlng : map.mouseEventToLatLng(e as MouseEvent)
-      const bounds = L.latLngBounds(start, latlng)
-      start = null
+    const finish = (a: L.LatLng, b: L.LatLng) => {
+      const bounds = L.latLngBounds(a, b)
+      corner = null
       temp?.remove()
       temp = null
+      pin?.remove()
+      pin = null
       if (bounds.getNorth() === bounds.getSouth() || bounds.getEast() === bounds.getWest()) {
         onDrawEndRef.current()
         return
@@ -122,19 +121,45 @@ export function MapView({
       onDrawEndRef.current()
     }
 
-    map.on('mousedown', onDown)
+    const onClick = (e: L.LeafletMouseEvent) => {
+      if (!drawing) return
+      L.DomEvent.preventDefault(e.originalEvent)
+      L.DomEvent.stopPropagation(e.originalEvent)
+      if (!corner) {
+        corner = e.latlng
+        pin?.remove()
+        pin = L.circleMarker(e.latlng, {
+          radius: 7,
+          color: '#8ff0c0',
+          weight: 2,
+          fillColor: '#1f8a5b',
+          fillOpacity: 1,
+        }).addTo(map)
+        return
+      }
+      finish(corner, e.latlng)
+    }
+
+    const onMove = (e: L.LeafletMouseEvent) => {
+      if (!drawing || !corner) return
+      preview(corner, e.latlng)
+    }
+
+    map.on('click', onClick)
     map.on('mousemove', onMove)
-    document.addEventListener('mouseup', onUp)
     map.getContainer().style.cursor = drawing ? 'crosshair' : ''
+    map.getContainer().classList.toggle('is-drawing', drawing)
 
     return () => {
-      map.off('mousedown', onDown)
+      map.off('click', onClick)
       map.off('mousemove', onMove)
-      document.removeEventListener('mouseup', onUp)
       map.dragging.enable()
       map.boxZoom.enable()
+      map.doubleClickZoom.enable()
       map.getContainer().style.cursor = ''
+      map.getContainer().classList.remove('is-drawing')
       temp?.remove()
+      pin?.remove()
     }
   }, [drawing])
 
