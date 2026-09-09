@@ -362,15 +362,9 @@ function siteHelperCanUseServerLan(): boolean {
 export function meshPcHelperCommand(session: string): string {
   const ps1 = `${window.location.origin}/meshcore-pc-helper.ps1`
   const ws = `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}/meshcore-bridge`
-  const inner =
-    "$c=(Invoke-WebRequest -UseBasicParsing '" +
-    ps1 +
-    "').Content; & ([scriptblock]::Create($c)) -Session '" +
-    session +
-    "' -Url '" +
-    ws +
-    "'"
-  return 'powershell -NoProfile -ExecutionPolicy Bypass -Command "' + inner + '"'
+  return (
+    `& ([scriptblock]::Create((Invoke-WebRequest -UseBasicParsing '${ps1}').Content)) -Session '${session}' -Url '${ws}'`
+  )
 }
 
 type BridgeHooks = {

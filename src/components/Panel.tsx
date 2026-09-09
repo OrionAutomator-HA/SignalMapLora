@@ -495,8 +495,9 @@ export function Panel({
           {helperCommand && (
             <div className="helper-box">
               <p className="warn">
-                Paste this in PowerShell on this PC and leave that window open. It
-                opens the radio from your LAN; the website only forwards bytes.
+                Paste this into PowerShell on this PC (the window that already shows
+                PS C:\...) and leave it open. Do not wrap it in another powershell
+                -Command — that strips the script.
               </p>
               <textarea className="helper-cmd" readOnly rows={5} value={helperCommand} />
               <button
