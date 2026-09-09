@@ -5,6 +5,7 @@ import { downsampleGrid, loadDemGrid } from './lib/dem'
 import { maxRangeM } from './lib/coverage'
 import {
   bboxAroundPoint,
+  bboxFromPoints,
   bboxSizeKm,
   cellAreaKm2,
   chooseGridShape,
@@ -13,6 +14,7 @@ import {
   MAX_REGION_KM,
 } from './lib/geo'
 import { maskToDataUrl } from './lib/overlay'
+import { importRepeatersOverIp, importRepeatersOverUsb } from './lib/meshcore'
 import type { WorkerRequest, WorkerResponse } from './lib/workerMessages'
 import type { BBox, ExistingNode, PlanMode, RadioParams, RankedSite } from './types'
 import './App.css'
@@ -49,6 +51,7 @@ export default function App() {
   const [finalPct, setFinalPct] = useState<number | null>(null)
   const [probe, setProbe] = useState<ExistingNode | null>(null)
   const [coveredKm2, setCoveredKm2] = useState<number | null>(null)
+  const [meshNodes, setMeshNodes] = useState<ExistingNode[]>([])
   const fineGridRef = useRef<Awaited<ReturnType<typeof loadDemGrid>> | null>(null)
   const workerRef = useRef<Worker | null>(null)
   const jobRef = useRef(0)
@@ -125,6 +128,79 @@ export default function App() {
     })
   }
 
+  async function runUnionCoverage(nodes: ExistingNode[]) {
+    if (!nodes.length) return
+    const padKm = Math.min(maxRangeM(radio) / 1000, MAX_COVERAGE_PAD_KM)
+    const coverageBbox = bboxFromPoints(nodes, padKm)
+    const coverSize = bboxSizeKm(coverageBbox)
+    if (coverSize.maxSideKm > 160) {
+      throw new Error(
+        'Those nodes span more than 160 km including radio range. Import a smaller set, or lower TX power so the map window shrinks.',
+      )
+    }
+    const fineShape = chooseGridShape(coverageBbox, coverSize.maxSideKm > 90 ? 96 : 144)
+    const fine = await loadDemGrid(
+      coverageBbox,
+      fineShape.cols,
+      fineShape.rows,
+      (message, fraction) => {
+        setProgress(`${message} (${Math.round(fraction * 100)}%)`)
+      },
+    )
+    fineGridRef.current = fine
+    const jobId = ++jobRef.current
+    const pending = waitForWorker(jobId, 'coverage')
+    const payload: WorkerRequest = {
+      type: 'unionCoverage',
+      jobId,
+      grid: fine,
+      radio,
+      transmitters: nodes.map((n) => ({ lat: n.lat, lon: n.lon })),
+    }
+    worker.postMessage(payload)
+    const result = await pending
+    let covered = 0
+    for (let i = 0; i < result.mask.length; i++) {
+      if (result.mask[i]) covered++
+    }
+    const km2 = covered * cellAreaKm2(fine)
+    setOverlayBounds(coverageBbox)
+    setOverlayUrl(maskToDataUrl(result.mask, result.cols, result.rows))
+    setCoveredKm2(km2)
+    setProgress(
+      `Imported ${nodes.length} node${nodes.length === 1 ? '' : 's'} · about ${km2.toFixed(1)} km² combined`,
+    )
+  }
+
+  async function importMesh(loader: () => Promise<ExistingNode[]>) {
+    setBusy(true)
+    setError(null)
+    setSites([])
+    setOverlayUrl(null)
+    setCoveredKm2(null)
+    setProgress('Talking to MeshCore radio…')
+    try {
+      const nodes = await loader()
+      if (!nodes.length) {
+        throw new Error(
+          'Connected, but no repeater or room-server contacts had a saved location.',
+        )
+      }
+      setMeshNodes(nodes)
+      setProgress(`Loaded ${nodes.length} located node${nodes.length === 1 ? '' : 's'}. Fetching terrain…`)
+      await runUnionCoverage(nodes)
+    } catch (err) {
+      if (err instanceof DOMException && err.name === 'NotFoundError') {
+        setProgress('')
+        return
+      }
+      setError(err instanceof Error ? err.message : 'MeshCore import failed')
+      setProgress('')
+    } finally {
+      setBusy(false)
+    }
+  }
+
   async function runCoverageCheck() {
     if (!probe) return
     setBusy(true)
@@ -178,6 +254,21 @@ export default function App() {
   }
 
   async function runSearch() {
+    if (mode === 'mesh') {
+      if (!meshNodes.length) return
+      setBusy(true)
+      setError(null)
+      setProgress('Loading terrain…')
+      try {
+        await runUnionCoverage(meshNodes)
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Coverage failed')
+        setProgress('')
+      } finally {
+        setBusy(false)
+      }
+      return
+    }
     if (mode === 'check') {
       await runCoverageCheck()
       return
@@ -317,6 +408,7 @@ export default function App() {
           setDrawing(false)
           setPlacingExisting(mode === 'check')
           setProbe(null)
+          setMeshNodes([])
           resetResults()
           setProgress('')
           setError(null)
@@ -336,6 +428,7 @@ export default function App() {
           setDrawing(false)
           setPlacingExisting(next === 'check')
           if (next !== 'check') setProbe(null)
+          if (next !== 'mesh') setMeshNodes([])
         }}
         repeaterCount={repeaterCount}
         onRepeaterCount={(n) => setRepeaterCount(Math.min(12, Math.max(1, Math.round(n) || 1)))}
@@ -356,10 +449,13 @@ export default function App() {
         finalPct={finalPct}
         probe={probe}
         coveredKm2={coveredKm2}
+        meshNodes={meshNodes}
+        onUsbImport={() => void importMesh(() => importRepeatersOverUsb())}
+        onIpImport={(host, port) => void importMesh(() => importRepeatersOverIp(host, port))}
       />
       <MapView
         drawing={drawing}
-        bbox={mode === 'check' ? null : bbox}
+        bbox={mode === 'check' || mode === 'mesh' ? null : bbox}
         onBbox={(next) => {
           setBbox(next)
           resetResults()
@@ -372,11 +468,19 @@ export default function App() {
         overlayBounds={overlayBounds}
         placingExisting={mode === 'check' || placingExisting}
         existingNodes={
-          mode === 'check' ? (probe ? [probe] : []) : useExisting ? existingNodes : []
+          mode === 'mesh'
+            ? meshNodes
+            : mode === 'check'
+              ? probe
+                ? [probe]
+                : []
+              : useExisting
+                ? existingNodes
+                : []
         }
         onAddExisting={(lat, lon) => placeNode(lat, lon)}
-        nodeMarkerStyle={mode === 'check' ? 'probe' : 'existing'}
-        fitOverlay={mode === 'check'}
+        nodeMarkerStyle={mode === 'mesh' ? 'mesh' : mode === 'check' ? 'probe' : 'existing'}
+        fitOverlay={mode === 'check' || mode === 'mesh'}
       />
     </div>
   )

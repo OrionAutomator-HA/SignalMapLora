@@ -33,6 +33,9 @@ type Props = {
   finalPct: number | null
   probe: ExistingNode | null
   coveredKm2: number | null
+  meshNodes: ExistingNode[]
+  onUsbImport: () => void
+  onIpImport: (host: string, port: number) => void
 }
 
 const PRESETS = {
@@ -106,19 +109,26 @@ export function Panel({
   finalPct,
   probe,
   coveredKm2,
+  meshNodes,
+  onUsbImport,
+  onIpImport,
 }: Props) {
   const size = bbox ? bboxSizeKm(bbox) : null
   const tooBig = size ? size.maxSideKm > MAX_REGION_KM : false
   const warn = size ? size.maxSideKm > WARN_REGION_KM : false
   const [addLat, setAddLat] = useState('')
   const [addLon, setAddLon] = useState('')
+  const [meshHost, setMeshHost] = useState('')
+  const [meshPort, setMeshPort] = useState('5000')
 
   return (
     <aside className="panel">
       <header className="panel-header">
         <h1>Antenna site planner</h1>
         <p>
-          {mode === 'check'
+          {mode === 'mesh'
+            ? 'Experimental: pull repeater contacts with locations from a MeshCore companion radio, plot them, and estimate combined coverage.'
+            : mode === 'check'
             ? 'Drop your node on the map to see the land it should reach with these radio settings.'
             : mode === 'multi'
               ? 'Draw an area, optionally mark existing repeaters, then place extra masts so the square is covered.'
@@ -153,10 +163,18 @@ export function Panel({
           >
             Coverage check
           </button>
+          <button
+            type="button"
+            className={mode === 'mesh' ? 'chip on' : 'chip'}
+            onClick={() => onMode('mesh')}
+            disabled={busy}
+          >
+            Mesh import
+          </button>
         </div>
       </section>
 
-      {mode !== 'check' && (
+      {mode !== 'check' && mode !== 'mesh' && (
       <section>
         <h2>Region</h2>
         <div className="row">
@@ -373,7 +391,7 @@ export function Panel({
             </>
           )}
         </section>
-      ) : (
+      ) : mode === 'check' ? (
         <section>
           <h2>Your node</h2>
           <p className="muted">
@@ -419,6 +437,61 @@ export function Panel({
             </p>
           )}
         </section>
+      ) : (
+        <section>
+          <h2>Companion radio</h2>
+          <p className="experimental">
+            Experimental. Talks to MeshCore companion firmware (USB serial or Wi‑Fi TCP).
+            Only saved repeater and room-server contacts with coordinates are plotted. Coverage
+            is a generic terrain estimate, not a live RF survey.
+          </p>
+          <div className="row">
+            <button type="button" onClick={onUsbImport} disabled={busy}>
+              Connect USB
+            </button>
+            <button type="button" onClick={onClear} disabled={busy || meshNodes.length === 0}>
+              Clear
+            </button>
+          </div>
+          <p className="muted">Or IP of a companion_radio_wifi node (default port 5000):</p>
+          <div className="coord-row">
+            <input
+              type="text"
+              placeholder="IP or hostname"
+              value={meshHost}
+              onChange={(e) => setMeshHost(e.target.value)}
+            />
+            <input
+              type="number"
+              placeholder="Port"
+              value={meshPort}
+              onChange={(e) => setMeshPort(e.target.value)}
+              style={{ width: 72, flex: '0 0 72px' }}
+            />
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => onIpImport(meshHost, Number(meshPort))}
+            >
+              Connect IP
+            </button>
+          </div>
+          {meshNodes.length > 0 && (
+            <ul className="results">
+              {meshNodes.map((node, i) => (
+                <li key={node.id}>
+                  <div className="result existing-row">
+                    <strong>R{i + 1}</strong>
+                    <span className="muted">
+                      {node.name} · {node.kind === 'room' ? 'room' : 'repeater'} ·{' '}
+                      {node.lat.toFixed(4)}, {node.lon.toFixed(4)}
+                    </span>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
       )}
 
       <button
@@ -427,16 +500,22 @@ export function Panel({
         onClick={onSearch}
         disabled={
           busy ||
-          (mode === 'check' ? !probe : !bbox || tooBig)
+          (mode === 'mesh'
+            ? meshNodes.length === 0
+            : mode === 'check'
+              ? !probe
+              : !bbox || tooBig)
         }
       >
         {busy
           ? 'Working…'
-          : mode === 'check'
-            ? 'Show coverage'
-            : mode === 'multi'
-              ? `Plan ${repeaterCount} new repeaters`
-              : `Find ${siteCount} best sites`}
+          : mode === 'mesh'
+            ? 'Show combined coverage'
+            : mode === 'check'
+              ? 'Show coverage'
+              : mode === 'multi'
+                ? `Plan ${repeaterCount} new repeaters`
+                : `Find ${siteCount} best sites`}
       </button>
       {progress && <p className="muted">{progress}</p>}
       {error && <p className="warn">{error}</p>}
@@ -449,8 +528,14 @@ export function Panel({
       {mode === 'check' && coveredKm2 !== null && (
         <p className="muted">Predicted land coverage about {coveredKm2.toFixed(1)} km².</p>
       )}
+      {mode === 'mesh' && coveredKm2 !== null && (
+        <p className="muted">
+          Combined estimate about {coveredKm2.toFixed(1)} km² from {meshNodes.length} located
+          node{meshNodes.length === 1 ? '' : 's'}.
+        </p>
+      )}
 
-      {sites.length > 0 && mode !== 'check' && (
+      {sites.length > 0 && mode !== 'check' && mode !== 'mesh' && (
         <section>
           <h2>{mode === 'multi' ? `New repeaters (${sites.length})` : `Top ${sites.length} sites`}</h2>
           <ul className="results">
@@ -478,9 +563,11 @@ export function Panel({
       )}
 
       <p className="footnote">
-        {mode === 'check'
-          ? 'Heatmap is terrain line-of-sight with 4/3 Earth radius plus free-space path loss, out to the radio’s link budget. DEM is ground elevation, not buildings or trees.'
-          : 'Pins stay inside the dashed square. Multi-repeater uses a greedy fill: existing nodes first, then new masts that cover the most remaining gaps. DEM is ground elevation, not buildings.'}
+        {mode === 'mesh'
+          ? 'Experimental MeshCore import uses the companion serial protocol over USB (Web Serial) or raw TCP when the browser allows it. Repeaters without lat/lon in the contact list are skipped. DEM is ground elevation, not buildings or trees.'
+          : mode === 'check'
+            ? 'Heatmap is terrain line-of-sight with 4/3 Earth radius plus free-space path loss, out to the radio’s link budget. DEM is ground elevation, not buildings or trees.'
+            : 'Pins stay inside the dashed square. Multi-repeater uses a greedy fill: existing nodes first, then new masts that cover the most remaining gaps. DEM is ground elevation, not buildings.'}
       </p>
     </aside>
   )

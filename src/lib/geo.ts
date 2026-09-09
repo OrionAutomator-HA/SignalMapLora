@@ -116,6 +116,23 @@ export function bboxAroundPoint(lat: number, lon: number, radiusKm: number): BBo
   return expandBbox({ west: lon, east: lon, south: lat, north: lat }, radiusKm)
 }
 
+export function bboxFromPoints(
+  points: { lat: number; lon: number }[],
+  padKm: number,
+): BBox {
+  let west = 180
+  let east = -180
+  let south = 90
+  let north = -90
+  for (const p of points) {
+    west = Math.min(west, p.lon)
+    east = Math.max(east, p.lon)
+    south = Math.min(south, p.lat)
+    north = Math.max(north, p.lat)
+  }
+  return expandBbox({ west, south, east, north }, padKm)
+}
+
 export function expandBbox(bbox: BBox, padKm: number): BBox {
   const { lat } = bboxCenter(bbox)
   const dLat = padKm / 110.574

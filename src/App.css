@@ -193,10 +193,22 @@ button.primary,
   font-size: 11px;
 }
 
-.site-marker-inner.is-probe {
-  background: #6b3d12;
-  border-color: #f0b45a;
-  font-size: 11px;
+.site-marker-inner.is-mesh {
+  background: #3d2a63;
+  border-color: #c4a6f5;
+  font-size: 9px;
+  padding: 0 2px;
+}
+
+.experimental {
+  border: 1px solid #8a6a2a;
+  background: #2a2418;
+  color: #f0b45a;
+  border-radius: 8px;
+  padding: 10px 12px;
+  font-size: 0.82rem;
+  line-height: 1.45;
+  margin: 8px 0 12px;
 }
 
 .check {

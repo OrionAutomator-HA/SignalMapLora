@@ -42,9 +42,11 @@ export type ExistingNode = {
   id: string
   lat: number
   lon: number
+  name?: string
+  kind?: 'repeater' | 'room' | 'other'
 }
 
-export type PlanMode = 'rank' | 'multi' | 'check'
+export type PlanMode = 'rank' | 'multi' | 'check' | 'mesh'
 
 export type SearchProgress = {
   message: string

@@ -16,8 +16,25 @@ type Props = {
   placingExisting: boolean
   existingNodes: ExistingNode[]
   onAddExisting: (lat: number, lon: number) => void
-  nodeMarkerStyle?: 'existing' | 'probe'
+  nodeMarkerStyle?: 'existing' | 'probe' | 'mesh'
   fitOverlay?: boolean
+}
+
+function escapeHtml(text: string): string {
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+}
+
+function nodeLabel(node: ExistingNode, index: number, style: 'existing' | 'probe' | 'mesh'): string {
+  if (style === 'probe') return 'TX'
+  if (style === 'mesh') {
+    const raw = node.name?.trim() || `R${index + 1}`
+    return raw.length > 4 ? `${raw.slice(0, 3)}…` : raw
+  }
+  return `E${index + 1}`
 }
 
 function toLeafletBounds(bbox: BBox): L.LatLngBounds {
@@ -220,18 +237,29 @@ export function MapView({
     group.clearLayers()
     existingNodes.forEach((node, i) => {
       const probe = nodeMarkerStyle === 'probe'
-      const label = probe ? 'TX' : `E${i + 1}`
+      const mesh = nodeMarkerStyle === 'mesh'
+      const label = escapeHtml(nodeLabel(node, i, nodeMarkerStyle))
+      const cls = probe ? 'is-probe' : mesh ? 'is-mesh' : 'is-existing'
       const icon = L.divIcon({
         className: 'site-marker',
-        html: `<div class="site-marker-inner ${probe ? 'is-probe' : 'is-existing'}">${label}</div>`,
+        html: `<div class="site-marker-inner ${cls}">${label}</div>`,
         iconSize: [28, 28],
         iconAnchor: [14, 14],
       })
       const marker = L.marker([node.lat, node.lon], { icon, zIndexOffset: 800 })
-      marker.bindTooltip(probe ? 'Your node' : `Existing E${i + 1}`)
+      const tip = probe
+        ? 'Your node'
+        : mesh
+          ? `${node.name ?? `R${i + 1}`} · ${node.kind === 'room' ? 'room server' : 'repeater'}`
+          : `Existing E${i + 1}`
+      marker.bindTooltip(tip)
       group.addLayer(marker)
     })
     const map = mapRef.current
+    if (map && nodeMarkerStyle === 'mesh' && existingNodes.length > 0) {
+      const bounds = L.latLngBounds(existingNodes.map((n) => [n.lat, n.lon] as [number, number]))
+      map.fitBounds(bounds, { padding: [36, 36], maxZoom: 12 })
+    }
     const last = existingNodes[existingNodes.length - 1]
     if (map && last && nodeMarkerStyle === 'probe') {
       const key = `${last.lat.toFixed(6)},${last.lon.toFixed(6)}`
