@@ -158,7 +158,7 @@ export class MeshCoreSession {
   async handshake(): Promise<void> {
     await this.send(Uint8Array.of(CMD_DEVICE_QUERY, PROTOCOL_VER))
     try {
-      await this.waitFrame(2500)
+      await this.waitFrame(8000)
     } catch {
       // Older firmware may not answer device-query; continue.
     }
@@ -169,7 +169,7 @@ export class MeshCoreSession {
     start.set(name, 8)
     await this.send(start)
     try {
-      await this.waitFrame(2500)
+      await this.waitFrame(8000)
     } catch {
       // Some radios still accept GET_CONTACTS after a quiet app-start.
     }
@@ -180,7 +180,7 @@ export class MeshCoreSession {
     await this.send(Uint8Array.of(CMD_GET_CONTACTS))
     const deadline = Date.now() + 20_000
     while (Date.now() < deadline) {
-      const frame = await this.waitFrame(Math.max(500, deadline - Date.now()))
+      const frame = await this.waitFrame(Math.max(8000, deadline - Date.now()))
       const code = frame[0]
       if (code === RESP_ERR) throw new Error('Radio returned an error while listing contacts')
       if (code === RESP_CONTACTS_START) continue

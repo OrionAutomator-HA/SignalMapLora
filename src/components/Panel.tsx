@@ -461,7 +461,11 @@ export function Panel({
             </button>
           </div>
           {usbBlock && <p className="warn">{usbBlock}</p>}
-          <p className="muted">Or companion_radio_wifi IPv4 on this PC’s LAN (port 5000):</p>
+          <p className="muted">
+            Close the official MeshCore app first — companion Wi‑Fi usually allows
+            only one TCP client. Then companion_radio_wifi IPv4 on this PC’s LAN
+            (port 5000):
+          </p>
           <div className="coord-row">
             <input
               type="text"

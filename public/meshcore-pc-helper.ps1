@@ -24,6 +24,7 @@ function Send-Text([string]$text) {
 }
 
 Write-Host 'Helper is waiting for the browser. Leave this window open.'
+Write-Host 'Close the official MeshCore app first — the radio usually allows only one Wi-Fi TCP client.'
 
 $tcp = $null
 $stream = $null
@@ -32,7 +33,35 @@ $buf = New-Object byte[] 8192
 function Close-All {
   if ($stream) { try { $stream.Close() } catch {} }
   if ($tcp) { try { $tcp.Close() } catch {} }
-  try { $ws.Abort() } catch {}
+  if ($ws.State -eq [Net.WebSockets.WebSocketState]::Open) {
+    try {
+      $ws.CloseAsync([Net.WebSockets.WebSocketCloseStatus]::NormalClosure, 'done', $ct).GetAwaiter().GetResult() | Out-Null
+    } catch {}
+  }
+  try { $ws.Dispose() } catch {}
+}
+
+function Connect-Radio([string]$radioIp, [int]$radioPort) {
+  Write-Host "Opening TCP ${radioIp}:${radioPort} from this PC (IPv4, 8s timeout)..."
+  $ip = [Net.IPAddress]::Parse($radioIp)
+  if ($ip.AddressFamily -ne [Net.Sockets.AddressFamily]::InterNetwork) {
+    throw "Use a dotted IPv4 address, not '$radioIp'."
+  }
+  $client = New-Object Net.Sockets.TcpClient([Net.Sockets.AddressFamily]::InterNetwork)
+  $ar = $client.BeginConnect($ip, $radioPort, $null, $null)
+  if (-not $ar.AsyncWaitHandle.WaitOne(8000, $false)) {
+    try { $client.Close() } catch {}
+    throw "Timed out reaching ${radioIp}:${radioPort}. Disconnect the official MeshCore app from the radio, then try again. Only one TCP client can use companion_radio_wifi at a time."
+  }
+  try {
+    $client.EndConnect($ar)
+  } catch {
+    throw "Nothing accepted TCP on ${radioIp}:${radioPort}. $($_.Exception.Message)"
+  }
+  $client.NoDelay = $true
+  $client.ReceiveTimeout = 0
+  $client.SendTimeout = 20000
+  return $client
 }
 
 try {
@@ -50,25 +79,22 @@ try {
     $payload = $ms.ToArray()
 
     if ($result.MessageType -eq [Net.WebSockets.WebSocketMessageType]::Text) {
-      $msg = [Text.Encoding]::UTF8.GetString($payload) | ConvertFrom-Json
-      if ($msg.error) { throw [string]$msg.error }
+      $text = [Text.Encoding]::UTF8.GetString($payload)
+      if ($text -match '"error"\s*:\s*"([^"]*)"') { throw $Matches[1] }
       if ($tcp) { continue }
-      $hostName = [string]$msg.host
-      $port = [int]$msg.port
-      if (-not $hostName) { continue }
-      Write-Host "Opening TCP $hostName`:$port from this PC..."
-      $tcp = New-Object Net.Sockets.TcpClient
-      $tcp.ReceiveTimeout = 20000
-      $tcp.SendTimeout = 20000
+      $radioIp = $null
+      $radioPort = 0
+      if ($text -match '"host"\s*:\s*"([^"]+)"') { $radioIp = $Matches[1] }
+      if ($text -match '"port"\s*:\s*(\d+)') { $radioPort = [int]$Matches[1] }
+      if (-not $radioIp -or $radioPort -lt 1) { continue }
       try {
-        $tcp.Connect($hostName, $port)
+        $tcp = Connect-Radio $radioIp $radioPort
       } catch {
-        Send-Text (@{ error = "This PC could not reach $hostName`:$port. $($_.Exception.Message)" } | ConvertTo-Json -Compress)
-        Close-All
+        Send-Text (@{ error = [string]$_.Exception.Message } | ConvertTo-Json -Compress)
         throw
       }
       $stream = $tcp.GetStream()
-      Send-Text (@{ ok = $true } | ConvertTo-Json -Compress)
+      Send-Text '{"ok":true}'
       $rs = [runspacefactory]::CreateRunspace()
       $rs.Open()
       $rs.SessionStateProxy.SetVariable('stream', $stream)

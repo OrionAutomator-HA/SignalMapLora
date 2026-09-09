@@ -236,6 +236,11 @@ button.primary,
   font: inherit;
 }
 
+.coord-row input:first-child {
+  flex: 2;
+  min-width: 12rem;
+}
+
 .helper-box {
   margin: 10px 0 12px;
 }

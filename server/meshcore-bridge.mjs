@@ -234,6 +234,10 @@ function bindRelay(a, b) {
             to.destroy()
             return
           }
+          if (frame.opcode === 9) {
+            from.write(encodeFrame(frame.payload, 10))
+            continue
+          }
           to.write(encodeFrame(frame.payload, frame.opcode))
         }
       } catch {
