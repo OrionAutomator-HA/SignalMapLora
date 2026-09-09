@@ -363,7 +363,7 @@ export function meshPcHelperCommand(session: string): string {
   const ps1 = `${window.location.origin}/meshcore-pc-helper.ps1`
   const ws = `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}/meshcore-bridge`
   return (
-    `& ([scriptblock]::Create((Invoke-WebRequest -UseBasicParsing '${ps1}').Content)) -Session '${session}' -Url '${ws}'`
+    `$helper = Join-Path $env:TEMP 'meshcore-pc-helper.ps1'; Invoke-WebRequest -UseBasicParsing -OutFile $helper '${ps1}'; Set-ExecutionPolicy -Scope Process Bypass; & $helper -Session '${session}' -Url '${ws}'`
   )
 }
 
