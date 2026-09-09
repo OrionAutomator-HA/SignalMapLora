@@ -1,4 +1,5 @@
-import { fillCoverageMask } from './coverage'
+import { fillCoverageMask, orMaskInto } from './coverage'
+import { planMultiRepeaters } from './optimizer'
 import { collectCandidates, rankCandidates, refineTopSites } from './search'
 import type { WorkerRequest, WorkerResponse } from './workerMessages'
 
@@ -74,9 +75,71 @@ self.onmessage = (event: MessageEvent<WorkerRequest>) => {
       return
     }
 
+    if (msg.type === 'multi') {
+      self.postMessage({
+        type: 'progress',
+        jobId,
+        message: 'Planning repeater set…',
+        fraction: 0.42,
+      } satisfies WorkerResponse)
+      const plan = planMultiRepeaters(
+        msg.fine,
+        msg.searchBbox,
+        msg.radio,
+        msg.newCount,
+        msg.existing,
+        (done, total) => {
+          self.postMessage({
+            type: 'progress',
+            jobId,
+            message: `Placing repeater ${Math.min(done + 1, total)} of ${total}`,
+            fraction: 0.42 + (done / Math.max(1, total)) * 0.4,
+          } satisfies WorkerResponse)
+        },
+      )
+      const mask = new Uint8Array(msg.fine.cols * msg.fine.rows)
+      const scratch = new Uint8Array(msg.fine.cols * msg.fine.rows)
+      for (const node of msg.existing) {
+        fillCoverageMask(msg.fine, node.lat, node.lon, msg.radio, scratch)
+        orMaskInto(mask, scratch)
+      }
+      for (const site of plan.sites) {
+        fillCoverageMask(msg.fine, site.lat, site.lon, msg.radio, scratch)
+        orMaskInto(mask, scratch)
+      }
+      self.postMessage({
+        type: 'multiResult',
+        jobId,
+        sites: plan.sites,
+        mask,
+        cols: msg.fine.cols,
+        rows: msg.fine.rows,
+        existingPct: plan.existingPct,
+        finalPct: plan.finalPct,
+        coveredKm2: plan.coveredKm2,
+      } satisfies WorkerResponse)
+      return
+    }
+
     if (msg.type === 'coverage') {
       const mask = new Uint8Array(msg.grid.cols * msg.grid.rows)
       fillCoverageMask(msg.grid, msg.lat, msg.lon, msg.radio, mask)
+      self.postMessage({
+        type: 'coverage',
+        jobId,
+        mask,
+        cols: msg.grid.cols,
+        rows: msg.grid.rows,
+      } satisfies WorkerResponse)
+    }
+
+    if (msg.type === 'unionCoverage') {
+      const mask = new Uint8Array(msg.grid.cols * msg.grid.rows)
+      const scratch = new Uint8Array(msg.grid.cols * msg.grid.rows)
+      for (const tx of msg.transmitters) {
+        fillCoverageMask(msg.grid, tx.lat, tx.lon, msg.radio, scratch)
+        orMaskInto(mask, scratch)
+      }
       self.postMessage({
         type: 'coverage',
         jobId,

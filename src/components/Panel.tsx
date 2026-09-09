@@ -1,4 +1,5 @@
-import type { BBox, RadioParams, RankedSite } from '../types'
+import { useState } from 'react'
+import type { BBox, ExistingNode, PlanMode, RadioParams, RankedSite } from '../types'
 import { MAX_REGION_KM, WARN_REGION_KM, bboxSizeKm } from '../lib/geo'
 
 type Props = {
@@ -17,6 +18,19 @@ type Props = {
   onSelect: (rank: number) => void
   siteCount: number
   onSiteCount: (n: number) => void
+  mode: PlanMode
+  onMode: (mode: PlanMode) => void
+  repeaterCount: number
+  onRepeaterCount: (n: number) => void
+  useExisting: boolean
+  onUseExisting: (v: boolean) => void
+  placingExisting: boolean
+  onPlacingExisting: () => void
+  existingNodes: ExistingNode[]
+  onRemoveExisting: (id: string) => void
+  onAddExistingCoords: (lat: number, lon: number) => void
+  existingPct: number | null
+  finalPct: number | null
 }
 
 const PRESETS = {
@@ -75,20 +89,58 @@ export function Panel({
   onSelect,
   siteCount,
   onSiteCount,
+  mode,
+  onMode,
+  repeaterCount,
+  onRepeaterCount,
+  useExisting,
+  onUseExisting,
+  placingExisting,
+  onPlacingExisting,
+  existingNodes,
+  onRemoveExisting,
+  onAddExistingCoords,
+  existingPct,
+  finalPct,
 }: Props) {
   const size = bbox ? bboxSizeKm(bbox) : null
   const tooBig = size ? size.maxSideKm > MAX_REGION_KM : false
   const warn = size ? size.maxSideKm > WARN_REGION_KM : false
+  const [addLat, setAddLat] = useState('')
+  const [addLon, setAddLon] = useState('')
 
   return (
     <aside className="panel">
       <header className="panel-header">
         <h1>Antenna site planner</h1>
         <p>
-          Draw a region, set mast and radio values, then rank high ground by MeshCore-style
-          LoRa land coverage.
+          {mode === 'multi'
+            ? 'Draw an area, optionally mark existing repeaters, then place extra masts so the square is covered.'
+            : 'Draw a region, set mast and radio values, then rank high ground by MeshCore-style LoRa land coverage.'}
         </p>
       </header>
+
+      <section>
+        <h2>Mode</h2>
+        <div className="row">
+          <button
+            type="button"
+            className={mode === 'rank' ? 'chip on' : 'chip'}
+            onClick={() => onMode('rank')}
+            disabled={busy}
+          >
+            Rank sites
+          </button>
+          <button
+            type="button"
+            className={mode === 'multi' ? 'chip on' : 'chip'}
+            onClick={() => onMode('multi')}
+            disabled={busy}
+          >
+            Multi-repeater
+          </button>
+        </div>
+      </section>
 
       <section>
         <h2>Region</h2>
@@ -189,30 +241,123 @@ export function Panel({
         />
       </section>
 
-      <section>
-        <h2>Results</h2>
-        <div className="row">
-          {([5, 10, 20, 30] as const).map((n) => (
-            <button
-              key={n}
-              type="button"
-              className={siteCount === n ? 'chip on' : 'chip'}
-              onClick={() => onSiteCount(n)}
-            >
-              {n}
-            </button>
-          ))}
-        </div>
-        <Field
-          label="Best sites"
-          value={siteCount}
-          onChange={(n) => onSiteCount(n)}
-          step={1}
-          min={1}
-          max={40}
-          unit="sites"
-        />
-      </section>
+      {mode === 'rank' ? (
+        <section>
+          <h2>Results</h2>
+          <div className="row">
+            {([5, 10, 20, 30] as const).map((n) => (
+              <button
+                key={n}
+                type="button"
+                className={siteCount === n ? 'chip on' : 'chip'}
+                onClick={() => onSiteCount(n)}
+              >
+                {n}
+              </button>
+            ))}
+          </div>
+          <Field
+            label="Best sites"
+            value={siteCount}
+            onChange={(n) => onSiteCount(n)}
+            step={1}
+            min={1}
+            max={40}
+            unit="sites"
+          />
+        </section>
+      ) : (
+        <section>
+          <h2>New repeaters</h2>
+          <div className="row">
+            {([2, 3, 4, 5] as const).map((n) => (
+              <button
+                key={n}
+                type="button"
+                className={repeaterCount === n ? 'chip on' : 'chip'}
+                onClick={() => onRepeaterCount(n)}
+              >
+                {n}
+              </button>
+            ))}
+          </div>
+          <Field
+            label="Place"
+            value={repeaterCount}
+            onChange={(n) => onRepeaterCount(n)}
+            step={1}
+            min={1}
+            max={12}
+            unit="new"
+          />
+          <label className="check">
+            <input
+              type="checkbox"
+              checked={useExisting}
+              onChange={(e) => onUseExisting(e.target.checked)}
+            />
+            Include existing nodes
+          </label>
+          {useExisting && (
+            <>
+              <button
+                type="button"
+                className={placingExisting ? 'primary' : ''}
+                onClick={onPlacingExisting}
+                disabled={busy}
+              >
+                {placingExisting ? 'Tap the map to drop a node' : 'Tap map to add existing node'}
+              </button>
+              <div className="coord-row">
+                <input
+                  type="number"
+                  step="0.00001"
+                  placeholder="Lat"
+                  value={addLat}
+                  onChange={(e) => setAddLat(e.target.value)}
+                />
+                <input
+                  type="number"
+                  step="0.00001"
+                  placeholder="Lon"
+                  value={addLon}
+                  onChange={(e) => setAddLon(e.target.value)}
+                />
+                <button
+                  type="button"
+                  onClick={() => {
+                    const lat = Number(addLat)
+                    const lon = Number(addLon)
+                    if (!Number.isFinite(lat) || !Number.isFinite(lon)) return
+                    onAddExistingCoords(lat, lon)
+                    setAddLat('')
+                    setAddLon('')
+                  }}
+                >
+                  Add
+                </button>
+              </div>
+              {existingNodes.length > 0 && (
+                <ul className="results">
+                  {existingNodes.map((node, i) => (
+                    <li key={node.id}>
+                      <div className="result existing-row">
+                        <strong>E{i + 1}</strong>
+                        <span className="muted">
+                          {node.lat.toFixed(5)}, {node.lon.toFixed(5)}
+                        </span>
+                        <button type="button" onClick={() => onRemoveExisting(node.id)}>
+                          Remove
+                        </button>
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </>
+          )}
+        </section>
+      )}
 
       <button
         type="button"
@@ -220,14 +365,24 @@ export function Panel({
         onClick={onSearch}
         disabled={busy || !bbox || tooBig}
       >
-        {busy ? 'Working…' : `Find ${siteCount} best sites`}
+        {busy
+          ? 'Working…'
+          : mode === 'multi'
+            ? `Plan ${repeaterCount} new repeaters`
+            : `Find ${siteCount} best sites`}
       </button>
       {progress && <p className="muted">{progress}</p>}
       {error && <p className="warn">{error}</p>}
+      {mode === 'multi' && existingPct !== null && (
+        <p className="muted">
+          Existing nodes cover {existingPct.toFixed(0)}% of the square. With new masts:{' '}
+          {finalPct?.toFixed(0)}%.
+        </p>
+      )}
 
       {sites.length > 0 && (
         <section>
-          <h2>Top {sites.length} sites</h2>
+          <h2>{mode === 'multi' ? `New repeaters (${sites.length})` : `Top ${sites.length} sites`}</h2>
           <ul className="results">
             {sites.map((site) => (
               <li key={site.rank}>
@@ -238,7 +393,9 @@ export function Panel({
                 >
                   <strong>#{site.rank}</strong>
                   <span>
-                    {site.coveredKm2.toFixed(1)} km² · {site.coveredPct.toFixed(0)}%
+                    {mode === 'multi'
+                      ? `Area after this mast ${site.coveredPct.toFixed(0)}%`
+                      : `${site.coveredKm2.toFixed(1)} km² · ${site.coveredPct.toFixed(0)}%`}
                   </span>
                   <span className="muted">
                     {site.lat.toFixed(5)}, {site.lon.toFixed(5)} · {Math.round(site.elevM)} m
@@ -251,9 +408,9 @@ export function Panel({
       )}
 
       <p className="footnote">
-        Pins are chosen inside the dashed square. The heatmap shows predicted reach
-        beyond that square. Terrain line-of-sight with 4/3 Earth radius plus free-space
-        path loss. DEM is ground elevation, not buildings.
+        Pins stay inside the dashed square. Multi-repeater uses a greedy fill: existing
+        nodes first, then new masts that cover the most remaining gaps. DEM is ground
+        elevation, not buildings.
       </p>
     </aside>
   )

@@ -12,7 +12,7 @@ import {
 } from './lib/geo'
 import { maskToDataUrl } from './lib/overlay'
 import type { WorkerRequest, WorkerResponse } from './lib/workerMessages'
-import type { BBox, RadioParams, RankedSite } from './types'
+import type { BBox, ExistingNode, PlanMode, RadioParams, RankedSite } from './types'
 import './App.css'
 
 const defaultRadio: RadioParams = {
@@ -38,9 +38,17 @@ export default function App() {
   const [overlayUrl, setOverlayUrl] = useState<string | null>(null)
   const [overlayBounds, setOverlayBounds] = useState<BBox | null>(null)
   const [siteCount, setSiteCount] = useState(10)
+  const [mode, setMode] = useState<PlanMode>('rank')
+  const [repeaterCount, setRepeaterCount] = useState(3)
+  const [useExisting, setUseExisting] = useState(false)
+  const [placingExisting, setPlacingExisting] = useState(false)
+  const [existingNodes, setExistingNodes] = useState<ExistingNode[]>([])
+  const [existingPct, setExistingPct] = useState<number | null>(null)
+  const [finalPct, setFinalPct] = useState<number | null>(null)
   const fineGridRef = useRef<Awaited<ReturnType<typeof loadDemGrid>> | null>(null)
   const workerRef = useRef<Worker | null>(null)
   const jobRef = useRef(0)
+  const existingSeq = useRef(0)
 
   const worker = useMemo(() => {
     const w = new Worker(new URL('./lib/coverage.worker.ts', import.meta.url), {
@@ -55,7 +63,49 @@ export default function App() {
     setSelectedRank(null)
     setOverlayUrl(null)
     setOverlayBounds(null)
+    setExistingPct(null)
+    setFinalPct(null)
     fineGridRef.current = null
+  }
+
+  async function loadGrids(search: BBox) {
+    const padKm = Math.min(maxRangeM(radio) / 1000, MAX_COVERAGE_PAD_KM)
+    const coverageBbox = expandBbox(search, padKm)
+    const coverSize = bboxSizeKm(coverageBbox)
+    const coarseShape = chooseGridShape(coverageBbox, coverSize.maxSideKm > 90 ? 80 : 96)
+    const fineShape = chooseGridShape(coverageBbox, coverSize.maxSideKm > 90 ? 128 : 160)
+    const fine = await loadDemGrid(
+      coverageBbox,
+      fineShape.cols,
+      fineShape.rows,
+      (message, fraction) => {
+        setProgress(`${message} (${Math.round(fraction * 100)}%)`)
+      },
+    )
+    const coarse = downsampleGrid(fine, coarseShape.cols, coarseShape.rows)
+    fineGridRef.current = fine
+    return { coarse, fine, coverageBbox }
+  }
+
+  function waitForWorker<T extends WorkerResponse['type']>(
+    jobId: number,
+    type: T,
+  ): Promise<Extract<WorkerResponse, { type: T }>> {
+    return new Promise((resolve, reject) => {
+      const onMessage = (event: MessageEvent<WorkerResponse>) => {
+        const msg = event.data
+        if (msg.jobId !== jobId) return
+        if (msg.type === 'progress') {
+          setProgress(`${msg.message} (${Math.round(msg.fraction * 100)}%)`)
+          return
+        }
+        worker.removeEventListener('message', onMessage)
+        if (msg.type === 'error') reject(new Error(msg.message))
+        else if (msg.type === type) resolve(msg as Extract<WorkerResponse, { type: T }>)
+        else reject(new Error('Unexpected worker response'))
+      }
+      worker.addEventListener('message', onMessage)
+    })
   }
 
   async function runSearch() {
@@ -66,66 +116,60 @@ export default function App() {
     setError(null)
     resetResults()
     setProgress('Loading terrain…')
-
     try {
-      const padKm = Math.min(maxRangeM(radio) / 1000, MAX_COVERAGE_PAD_KM)
-      const coverageBbox = expandBbox(bbox, padKm)
-      const coverSize = bboxSizeKm(coverageBbox)
-      const coarseShape = chooseGridShape(coverageBbox, coverSize.maxSideKm > 90 ? 80 : 96)
-      const fineShape = chooseGridShape(coverageBbox, coverSize.maxSideKm > 90 ? 128 : 160)
-      const fine = await loadDemGrid(
-        coverageBbox,
-        fineShape.cols,
-        fineShape.rows,
-        (message, fraction) => {
-          setProgress(`${message} (${Math.round(fraction * 100)}%)`)
-        },
-      )
-      const coarse = downsampleGrid(fine, coarseShape.cols, coarseShape.rows)
-      fineGridRef.current = fine
+      const { coarse, fine, coverageBbox } = await loadGrids(bbox)
       const jobId = ++jobRef.current
-
-      const result = await new Promise<Extract<WorkerResponse, { type: 'result' }>>(
-        (resolve, reject) => {
-          const onMessage = (event: MessageEvent<WorkerResponse>) => {
-            const msg = event.data
-            if (msg.jobId !== jobId) return
-            if (msg.type === 'progress') {
-              setProgress(`${msg.message} (${Math.round(msg.fraction * 100)}%)`)
-              return
-            }
-            worker.removeEventListener('message', onMessage)
-            if (msg.type === 'error') reject(new Error(msg.message))
-            else if (msg.type === 'result') resolve(msg)
-            else reject(new Error('Unexpected worker response'))
-          }
-          worker.addEventListener('message', onMessage)
-          const payload: WorkerRequest = {
-            type: 'search',
-            jobId,
-            coarse,
-            fine,
-            radio,
-            searchBbox: bbox,
-            siteCount,
-          }
-          worker.postMessage(payload)
-        },
-      )
-
-      setSites(result.sites)
-      setSelectedRank(result.sites[0]?.rank ?? null)
-      setOverlayBounds(coverageBbox)
-      setOverlayUrl(
-        result.sites.length
-          ? maskToDataUrl(result.mask, result.cols, result.rows)
-          : null,
-      )
-      setProgress(
-        result.sites[0]
-          ? `Best site covers ${result.sites[0].coveredKm2.toFixed(1)} km² (${result.sites[0].coveredPct.toFixed(0)}%)`
-          : 'No candidate sites found',
-      )
+      if (mode === 'multi') {
+        const pending = waitForWorker(jobId, 'multiResult')
+        const payload: WorkerRequest = {
+          type: 'multi',
+          jobId,
+          fine,
+          radio,
+          searchBbox: bbox,
+          newCount: repeaterCount,
+          existing: useExisting ? existingNodes : [],
+        }
+        worker.postMessage(payload)
+        const result = await pending
+        setSites(result.sites)
+        setSelectedRank(result.sites[0]?.rank ?? null)
+        setOverlayBounds(coverageBbox)
+        setOverlayUrl(maskToDataUrl(result.mask, result.cols, result.rows))
+        setExistingPct(result.existingPct)
+        setFinalPct(result.finalPct)
+        setProgress(
+          result.sites.length
+            ? `Plan covers ${result.coveredKm2.toFixed(1)} km² (${result.finalPct.toFixed(0)}% of the square)`
+            : 'Could not place extra repeaters (existing nodes may already cover the square)',
+        )
+      } else {
+        const pending = waitForWorker(jobId, 'result')
+        const payload: WorkerRequest = {
+          type: 'search',
+          jobId,
+          coarse,
+          fine,
+          radio,
+          searchBbox: bbox,
+          siteCount,
+        }
+        worker.postMessage(payload)
+        const result = await pending
+        setSites(result.sites)
+        setSelectedRank(result.sites[0]?.rank ?? null)
+        setOverlayBounds(coverageBbox)
+        setOverlayUrl(
+          result.sites.length
+            ? maskToDataUrl(result.mask, result.cols, result.rows)
+            : null,
+        )
+        setProgress(
+          result.sites[0]
+            ? `Best site covers ${result.sites[0].coveredKm2.toFixed(1)} km² (${result.sites[0].coveredPct.toFixed(0)}%)`
+            : 'No candidate sites found',
+        )
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Search failed')
       setProgress('')
@@ -142,33 +186,38 @@ export default function App() {
     setBusy(true)
     setProgress(`Computing coverage for site #${rank}…`)
     try {
-      const result = await new Promise<Extract<WorkerResponse, { type: 'coverage' }>>(
-        (resolve, reject) => {
-          const jobId = ++jobRef.current
-          const onMessage = (event: MessageEvent<WorkerResponse>) => {
-            const msg = event.data
-            if (msg.jobId !== jobId) return
-            if (msg.type === 'progress') return
-            workerRef.current?.removeEventListener('message', onMessage)
-            if (msg.type === 'coverage') resolve(msg)
-            else if (msg.type === 'error') reject(new Error(msg.message))
-            else reject(new Error('Unexpected worker response'))
-          }
-          workerRef.current?.addEventListener('message', onMessage)
-          const payload: WorkerRequest = {
-            type: 'coverage',
-            jobId,
-            grid,
-            lat: site.lat,
-            lon: site.lon,
-            radio,
-          }
-          workerRef.current?.postMessage(payload)
-        },
-      )
+      const jobId = ++jobRef.current
+      const pending = waitForWorker(jobId, 'coverage')
+      if (mode === 'multi') {
+        const transmitters = [
+          ...(useExisting ? existingNodes : []),
+          ...sites,
+        ].map((n) => ({ lat: n.lat, lon: n.lon }))
+        const payload: WorkerRequest = {
+          type: 'unionCoverage',
+          jobId,
+          grid,
+          radio,
+          transmitters,
+        }
+        worker.postMessage(payload)
+      } else {
+        const payload: WorkerRequest = {
+          type: 'coverage',
+          jobId,
+          grid,
+          lat: site.lat,
+          lon: site.lon,
+          radio,
+        }
+        worker.postMessage(payload)
+      }
+      const result = await pending
       setOverlayUrl(maskToDataUrl(result.mask, result.cols, result.rows))
       setProgress(
-        `Site #${rank} covers ${site.coveredKm2.toFixed(1)} km² (${site.coveredPct.toFixed(0)}%)`,
+        mode === 'multi'
+          ? `Combined coverage ${finalPct?.toFixed(0) ?? '—'}% of the square`
+          : `Site #${rank} covers ${site.coveredKm2.toFixed(1)} km² (${site.coveredPct.toFixed(0)}%)`,
       )
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Coverage failed')
@@ -186,12 +235,14 @@ export default function App() {
         drawing={drawing}
         onDraw={() => {
           setDrawing(true)
+          setPlacingExisting(false)
           setError(null)
         }}
         onSearch={() => void runSearch()}
         onClear={() => {
           setBbox(null)
           setDrawing(false)
+          setPlacingExisting(false)
           resetResults()
           setProgress('')
           setError(null)
@@ -204,6 +255,36 @@ export default function App() {
         onSelect={(rank) => void selectSite(rank)}
         siteCount={siteCount}
         onSiteCount={(n) => setSiteCount(Math.min(40, Math.max(1, Math.round(n) || 1)))}
+        mode={mode}
+        onMode={(next) => {
+          setMode(next)
+          resetResults()
+          setPlacingExisting(false)
+          setDrawing(false)
+        }}
+        repeaterCount={repeaterCount}
+        onRepeaterCount={(n) => setRepeaterCount(Math.min(12, Math.max(1, Math.round(n) || 1)))}
+        useExisting={useExisting}
+        onUseExisting={(v) => {
+          setUseExisting(v)
+          if (!v) setPlacingExisting(false)
+        }}
+        placingExisting={placingExisting}
+        onPlacingExisting={() => {
+          setDrawing(false)
+          setPlacingExisting((v) => !v)
+        }}
+        existingNodes={existingNodes}
+        onRemoveExisting={(id) => setExistingNodes((nodes) => nodes.filter((n) => n.id !== id))}
+        onAddExistingCoords={(lat, lon) => {
+          existingSeq.current += 1
+          setExistingNodes((nodes) => [
+            ...nodes,
+            { id: `n${existingSeq.current}`, lat, lon },
+          ])
+        }}
+        existingPct={existingPct}
+        finalPct={finalPct}
       />
       <MapView
         drawing={drawing}
@@ -218,6 +299,15 @@ export default function App() {
         onSelect={(rank) => void selectSite(rank)}
         overlayUrl={overlayUrl}
         overlayBounds={overlayBounds}
+        placingExisting={placingExisting}
+        existingNodes={useExisting ? existingNodes : []}
+        onAddExisting={(lat, lon) => {
+          existingSeq.current += 1
+          setExistingNodes((nodes) => [
+            ...nodes,
+            { id: `n${existingSeq.current}`, lat, lon },
+          ])
+        }}
       />
     </div>
   )

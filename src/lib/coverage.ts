@@ -144,6 +144,29 @@ export function scoreSearchArea(
   }
 }
 
+export function coversLatLon(
+  grid: DemGrid,
+  txLat: number,
+  txLon: number,
+  rxLat: number,
+  rxLon: number,
+  radio: RadioParams,
+): boolean {
+  const { mPerCol, mPerRow } = cellMeters(grid)
+  const twoKR = 2 * radio.kFactor * EARTH_RADIUS_M
+  const rangeM = maxRangeM(radio)
+  const tx = latLonToColRowFloat(grid, txLat, txLon)
+  const rx = latLonToColRowFloat(grid, rxLat, rxLon)
+  return linkCovered(grid, tx.col, tx.row, rx.col, rx.row, radio, mPerCol, mPerRow, twoKR, rangeM)
+}
+
+export function orMaskInto(dest: Uint8Array, src: Uint8Array): void {
+  const n = Math.min(dest.length, src.length)
+  for (let i = 0; i < n; i++) {
+    if (src[i]) dest[i] = 1
+  }
+}
+
 export function fillCoverageMask(
   grid: DemGrid,
   txLat: number,

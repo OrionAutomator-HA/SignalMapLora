@@ -12,6 +12,8 @@
   background: #1a1d26;
   border-right: 1px solid #2c3140;
   box-sizing: border-box;
+  position: relative;
+  z-index: 2;
 }
 
 .panel-header h1 {
@@ -182,6 +184,50 @@ button.primary,
 .site-marker-inner.is-selected {
   background: #1f8a5b;
   border-color: #8ff0c0;
+}
+
+.site-marker-inner.is-existing {
+  background: #1e4d7b;
+  border-color: #8ec5f2;
+  font-size: 11px;
+}
+
+.check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 10px 0;
+  font-size: 0.85rem;
+}
+
+.coord-row {
+  display: flex;
+  gap: 6px;
+  margin: 8px 0;
+}
+
+.coord-row input {
+  flex: 1;
+  min-width: 0;
+  background: #12141a;
+  border: 1px solid #3a4154;
+  color: #f4f6fb;
+  border-radius: 6px;
+  padding: 6px 8px;
+  font: inherit;
+}
+
+.existing-row {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+}
+
+.existing-row button {
+  margin-left: auto;
+  padding: 4px 8px;
 }
 
 .leaflet-container.is-drawing {

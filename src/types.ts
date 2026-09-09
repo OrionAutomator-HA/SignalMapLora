@@ -38,6 +38,14 @@ export type RankedSite = {
   coveredCells: number
 }
 
+export type ExistingNode = {
+  id: string
+  lat: number
+  lon: number
+}
+
+export type PlanMode = 'rank' | 'multi'
+
 export type SearchProgress = {
   message: string
   fraction: number

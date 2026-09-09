@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react'
 import L from 'leaflet'
 import 'leaflet/dist/leaflet.css'
-import type { BBox, RankedSite } from '../types'
+import type { BBox, ExistingNode, RankedSite } from '../types'
 
 type Props = {
   drawing: boolean
@@ -13,6 +13,9 @@ type Props = {
   onSelect: (rank: number) => void
   overlayUrl: string | null
   overlayBounds: BBox | null
+  placingExisting: boolean
+  existingNodes: ExistingNode[]
+  onAddExisting: (lat: number, lon: number) => void
 }
 
 function toLeafletBounds(bbox: BBox): L.LatLngBounds {
@@ -32,18 +35,24 @@ export function MapView({
   onSelect,
   overlayUrl,
   overlayBounds,
+  placingExisting,
+  existingNodes,
+  onAddExisting,
 }: Props) {
   const containerRef = useRef<HTMLDivElement | null>(null)
   const mapRef = useRef<L.Map | null>(null)
   const rectRef = useRef<L.Rectangle | null>(null)
   const overlayRef = useRef<L.ImageOverlay | null>(null)
   const markersRef = useRef<L.LayerGroup | null>(null)
+  const existingRef = useRef<L.LayerGroup | null>(null)
   const onBboxRef = useRef(onBbox)
   const onDrawEndRef = useRef(onDrawEnd)
   const onSelectRef = useRef(onSelect)
+  const onAddExistingRef = useRef(onAddExisting)
   onBboxRef.current = onBbox
   onDrawEndRef.current = onDrawEnd
   onSelectRef.current = onSelect
+  onAddExistingRef.current = onAddExisting
 
   useEffect(() => {
     if (!containerRef.current || mapRef.current) return
@@ -60,6 +69,7 @@ export function MapView({
     }).addTo(map)
 
     markersRef.current = L.layerGroup().addTo(map)
+    existingRef.current = L.layerGroup().addTo(map)
     mapRef.current = map
     requestAnimationFrame(() => map.invalidateSize())
 
@@ -122,22 +132,27 @@ export function MapView({
     }
 
     const onClick = (e: L.LeafletMouseEvent) => {
-      if (!drawing) return
-      L.DomEvent.preventDefault(e.originalEvent)
-      L.DomEvent.stopPropagation(e.originalEvent)
-      if (!corner) {
-        corner = e.latlng
-        pin?.remove()
-        pin = L.circleMarker(e.latlng, {
-          radius: 7,
-          color: '#8ff0c0',
-          weight: 2,
-          fillColor: '#1f8a5b',
-          fillOpacity: 1,
-        }).addTo(map)
+      if (drawing) {
+        L.DomEvent.preventDefault(e.originalEvent)
+        L.DomEvent.stopPropagation(e.originalEvent)
+        if (!corner) {
+          corner = e.latlng
+          pin?.remove()
+          pin = L.circleMarker(e.latlng, {
+            radius: 7,
+            color: '#8ff0c0',
+            weight: 2,
+            fillColor: '#1f8a5b',
+            fillOpacity: 1,
+          }).addTo(map)
+          return
+        }
+        finish(corner, e.latlng)
         return
       }
-      finish(corner, e.latlng)
+      if (placingExisting) {
+        onAddExistingRef.current(e.latlng.lat, e.latlng.lng)
+      }
     }
 
     const onMove = (e: L.LeafletMouseEvent) => {
@@ -147,8 +162,8 @@ export function MapView({
 
     map.on('click', onClick)
     map.on('mousemove', onMove)
-    map.getContainer().style.cursor = drawing ? 'crosshair' : ''
-    map.getContainer().classList.toggle('is-drawing', drawing)
+    map.getContainer().style.cursor = drawing || placingExisting ? 'crosshair' : ''
+    map.getContainer().classList.toggle('is-drawing', drawing || placingExisting)
 
     return () => {
       map.off('click', onClick)
@@ -161,7 +176,7 @@ export function MapView({
       temp?.remove()
       pin?.remove()
     }
-  }, [drawing])
+  }, [drawing, placingExisting])
 
   useEffect(() => {
     const map = mapRef.current
@@ -190,6 +205,23 @@ export function MapView({
       interactive: false,
     }).addTo(map)
   }, [overlayUrl, overlayBounds])
+
+  useEffect(() => {
+    const group = existingRef.current
+    if (!group) return
+    group.clearLayers()
+    existingNodes.forEach((node, i) => {
+      const icon = L.divIcon({
+        className: 'site-marker',
+        html: `<div class="site-marker-inner is-existing">E${i + 1}</div>`,
+        iconSize: [28, 28],
+        iconAnchor: [14, 14],
+      })
+      const marker = L.marker([node.lat, node.lon], { icon, zIndexOffset: 800 })
+      marker.bindTooltip(`Existing E${i + 1}`)
+      group.addLayer(marker)
+    })
+  }, [existingNodes])
 
   useEffect(() => {
     const group = markersRef.current
