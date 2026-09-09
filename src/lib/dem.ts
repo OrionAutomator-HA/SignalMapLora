@@ -35,10 +35,10 @@ function tileCount(bbox: BBox, z: number): number {
 }
 
 function pickZoom(bbox: BBox): number {
-  for (let z = 12; z >= 8; z--) {
+  for (let z = 12; z >= 6; z--) {
     if (tileCount(bbox, z) <= 25) return z
   }
-  return 8
+  return 6
 }
 
 async function fetchTile(

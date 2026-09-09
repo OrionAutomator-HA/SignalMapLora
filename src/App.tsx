@@ -11,6 +11,7 @@ import {
   chooseGridShape,
   expandBbox,
   MAX_COVERAGE_PAD_KM,
+  MAX_MESH_SPAN_KM,
   MAX_REGION_KM,
 } from './lib/geo'
 import { maskToDataUrl } from './lib/overlay'
@@ -133,12 +134,14 @@ export default function App() {
     const padKm = Math.min(maxRangeM(radio) / 1000, MAX_COVERAGE_PAD_KM)
     const coverageBbox = bboxFromPoints(nodes, padKm)
     const coverSize = bboxSizeKm(coverageBbox)
-    if (coverSize.maxSideKm > 160) {
+    if (coverSize.maxSideKm > MAX_MESH_SPAN_KM) {
       throw new Error(
-        'Those nodes span more than 160 km including radio range. Import a smaller set, or lower TX power so the map window shrinks.',
+        `Those nodes span more than ${MAX_MESH_SPAN_KM} km including radio range. Import a smaller set, or lower TX power so the map window shrinks.`,
       )
     }
-    const fineShape = chooseGridShape(coverageBbox, coverSize.maxSideKm > 90 ? 96 : 144)
+    const maxSide =
+      coverSize.maxSideKm > 500 ? 64 : coverSize.maxSideKm > 200 ? 80 : coverSize.maxSideKm > 90 ? 96 : 144
+    const fineShape = chooseGridShape(coverageBbox, maxSide)
     const fine = await loadDemGrid(
       coverageBbox,
       fineShape.cols,
