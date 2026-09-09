@@ -41,6 +41,7 @@
 
 .row {
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
   margin-bottom: 10px;
 }
@@ -189,6 +190,12 @@ button.primary,
 .site-marker-inner.is-existing {
   background: #1e4d7b;
   border-color: #8ec5f2;
+  font-size: 11px;
+}
+
+.site-marker-inner.is-probe {
+  background: #6b3d12;
+  border-color: #f0b45a;
   font-size: 11px;
 }
 

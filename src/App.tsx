@@ -4,7 +4,9 @@ import { Panel } from './components/Panel'
 import { downsampleGrid, loadDemGrid } from './lib/dem'
 import { maxRangeM } from './lib/coverage'
 import {
+  bboxAroundPoint,
   bboxSizeKm,
+  cellAreaKm2,
   chooseGridShape,
   expandBbox,
   MAX_COVERAGE_PAD_KM,
@@ -45,6 +47,8 @@ export default function App() {
   const [existingNodes, setExistingNodes] = useState<ExistingNode[]>([])
   const [existingPct, setExistingPct] = useState<number | null>(null)
   const [finalPct, setFinalPct] = useState<number | null>(null)
+  const [probe, setProbe] = useState<ExistingNode | null>(null)
+  const [coveredKm2, setCoveredKm2] = useState<number | null>(null)
   const fineGridRef = useRef<Awaited<ReturnType<typeof loadDemGrid>> | null>(null)
   const workerRef = useRef<Worker | null>(null)
   const jobRef = useRef(0)
@@ -65,7 +69,20 @@ export default function App() {
     setOverlayBounds(null)
     setExistingPct(null)
     setFinalPct(null)
+    setCoveredKm2(null)
     fineGridRef.current = null
+  }
+
+  function placeNode(lat: number, lon: number) {
+    if (mode === 'check') {
+      setProbe({ id: 'tx', lat, lon })
+      setCoveredKm2(null)
+      setOverlayUrl(null)
+      setOverlayBounds(null)
+      return
+    }
+    existingSeq.current += 1
+    setExistingNodes((nodes) => [...nodes, { id: `n${existingSeq.current}`, lat, lon }])
   }
 
   async function loadGrids(search: BBox) {
@@ -108,7 +125,63 @@ export default function App() {
     })
   }
 
+  async function runCoverageCheck() {
+    if (!probe) return
+    setBusy(true)
+    setError(null)
+    setSites([])
+    setSelectedRank(null)
+    setCoveredKm2(null)
+    setOverlayUrl(null)
+    setProgress('Loading terrain…')
+    try {
+      const padKm = Math.min(maxRangeM(radio) / 1000, MAX_COVERAGE_PAD_KM)
+      const coverageBbox = bboxAroundPoint(probe.lat, probe.lon, padKm)
+      const coverSize = bboxSizeKm(coverageBbox)
+      const fineShape = chooseGridShape(coverageBbox, coverSize.maxSideKm > 90 ? 128 : 160)
+      const fine = await loadDemGrid(
+        coverageBbox,
+        fineShape.cols,
+        fineShape.rows,
+        (message, fraction) => {
+          setProgress(`${message} (${Math.round(fraction * 100)}%)`)
+        },
+      )
+      fineGridRef.current = fine
+      const jobId = ++jobRef.current
+      const pending = waitForWorker(jobId, 'coverage')
+      const payload: WorkerRequest = {
+        type: 'coverage',
+        jobId,
+        grid: fine,
+        lat: probe.lat,
+        lon: probe.lon,
+        radio,
+      }
+      worker.postMessage(payload)
+      const result = await pending
+      let covered = 0
+      for (let i = 0; i < result.mask.length; i++) {
+        if (result.mask[i]) covered++
+      }
+      const km2 = covered * cellAreaKm2(fine)
+      setOverlayBounds(coverageBbox)
+      setOverlayUrl(maskToDataUrl(result.mask, result.cols, result.rows))
+      setCoveredKm2(km2)
+      setProgress(`Predicted reach about ${km2.toFixed(1)} km²`)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Coverage failed')
+      setProgress('')
+    } finally {
+      setBusy(false)
+    }
+  }
+
   async function runSearch() {
+    if (mode === 'check') {
+      await runCoverageCheck()
+      return
+    }
     if (!bbox) return
     const size = bboxSizeKm(bbox)
     if (size.maxSideKm > MAX_REGION_KM) return
@@ -242,7 +315,8 @@ export default function App() {
         onClear={() => {
           setBbox(null)
           setDrawing(false)
-          setPlacingExisting(false)
+          setPlacingExisting(mode === 'check')
+          setProbe(null)
           resetResults()
           setProgress('')
           setError(null)
@@ -259,8 +333,9 @@ export default function App() {
         onMode={(next) => {
           setMode(next)
           resetResults()
-          setPlacingExisting(false)
           setDrawing(false)
+          setPlacingExisting(next === 'check')
+          if (next !== 'check') setProbe(null)
         }}
         repeaterCount={repeaterCount}
         onRepeaterCount={(n) => setRepeaterCount(Math.min(12, Math.max(1, Math.round(n) || 1)))}
@@ -276,19 +351,15 @@ export default function App() {
         }}
         existingNodes={existingNodes}
         onRemoveExisting={(id) => setExistingNodes((nodes) => nodes.filter((n) => n.id !== id))}
-        onAddExistingCoords={(lat, lon) => {
-          existingSeq.current += 1
-          setExistingNodes((nodes) => [
-            ...nodes,
-            { id: `n${existingSeq.current}`, lat, lon },
-          ])
-        }}
+        onAddExistingCoords={(lat, lon) => placeNode(lat, lon)}
         existingPct={existingPct}
         finalPct={finalPct}
+        probe={probe}
+        coveredKm2={coveredKm2}
       />
       <MapView
         drawing={drawing}
-        bbox={bbox}
+        bbox={mode === 'check' ? null : bbox}
         onBbox={(next) => {
           setBbox(next)
           resetResults()
@@ -299,15 +370,13 @@ export default function App() {
         onSelect={(rank) => void selectSite(rank)}
         overlayUrl={overlayUrl}
         overlayBounds={overlayBounds}
-        placingExisting={placingExisting}
-        existingNodes={useExisting ? existingNodes : []}
-        onAddExisting={(lat, lon) => {
-          existingSeq.current += 1
-          setExistingNodes((nodes) => [
-            ...nodes,
-            { id: `n${existingSeq.current}`, lat, lon },
-          ])
-        }}
+        placingExisting={mode === 'check' || placingExisting}
+        existingNodes={
+          mode === 'check' ? (probe ? [probe] : []) : useExisting ? existingNodes : []
+        }
+        onAddExisting={(lat, lon) => placeNode(lat, lon)}
+        nodeMarkerStyle={mode === 'check' ? 'probe' : 'existing'}
+        fitOverlay={mode === 'check'}
       />
     </div>
   )

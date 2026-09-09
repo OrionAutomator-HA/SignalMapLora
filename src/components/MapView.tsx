@@ -16,6 +16,8 @@ type Props = {
   placingExisting: boolean
   existingNodes: ExistingNode[]
   onAddExisting: (lat: number, lon: number) => void
+  nodeMarkerStyle?: 'existing' | 'probe'
+  fitOverlay?: boolean
 }
 
 function toLeafletBounds(bbox: BBox): L.LatLngBounds {
@@ -38,6 +40,8 @@ export function MapView({
   placingExisting,
   existingNodes,
   onAddExisting,
+  nodeMarkerStyle = 'existing',
+  fitOverlay = false,
 }: Props) {
   const containerRef = useRef<HTMLDivElement | null>(null)
   const mapRef = useRef<L.Map | null>(null)
@@ -45,6 +49,7 @@ export function MapView({
   const overlayRef = useRef<L.ImageOverlay | null>(null)
   const markersRef = useRef<L.LayerGroup | null>(null)
   const existingRef = useRef<L.LayerGroup | null>(null)
+  const lastProbeRef = useRef<string>('')
   const onBboxRef = useRef(onBbox)
   const onDrawEndRef = useRef(onDrawEnd)
   const onSelectRef = useRef(onSelect)
@@ -204,24 +209,38 @@ export function MapView({
       opacity: 0.85,
       interactive: false,
     }).addTo(map)
-  }, [overlayUrl, overlayBounds])
+    if (fitOverlay) {
+      map.fitBounds(toLeafletBounds(overlayBounds), { padding: [32, 32] })
+    }
+  }, [overlayUrl, overlayBounds, fitOverlay])
 
   useEffect(() => {
     const group = existingRef.current
     if (!group) return
     group.clearLayers()
     existingNodes.forEach((node, i) => {
+      const probe = nodeMarkerStyle === 'probe'
+      const label = probe ? 'TX' : `E${i + 1}`
       const icon = L.divIcon({
         className: 'site-marker',
-        html: `<div class="site-marker-inner is-existing">E${i + 1}</div>`,
+        html: `<div class="site-marker-inner ${probe ? 'is-probe' : 'is-existing'}">${label}</div>`,
         iconSize: [28, 28],
         iconAnchor: [14, 14],
       })
       const marker = L.marker([node.lat, node.lon], { icon, zIndexOffset: 800 })
-      marker.bindTooltip(`Existing E${i + 1}`)
+      marker.bindTooltip(probe ? 'Your node' : `Existing E${i + 1}`)
       group.addLayer(marker)
     })
-  }, [existingNodes])
+    const map = mapRef.current
+    const last = existingNodes[existingNodes.length - 1]
+    if (map && last && nodeMarkerStyle === 'probe') {
+      const key = `${last.lat.toFixed(6)},${last.lon.toFixed(6)}`
+      if (lastProbeRef.current !== key) {
+        lastProbeRef.current = key
+        map.panTo([last.lat, last.lon])
+      }
+    }
+  }, [existingNodes, nodeMarkerStyle])
 
   useEffect(() => {
     const group = markersRef.current

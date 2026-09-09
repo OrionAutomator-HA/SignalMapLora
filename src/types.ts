@@ -44,7 +44,7 @@ export type ExistingNode = {
   lon: number
 }
 
-export type PlanMode = 'rank' | 'multi'
+export type PlanMode = 'rank' | 'multi' | 'check'
 
 export type SearchProgress = {
   message: string

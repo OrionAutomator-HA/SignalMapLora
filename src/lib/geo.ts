@@ -112,6 +112,10 @@ export function pointInBBox(lat: number, lon: number, bbox: BBox): boolean {
   return lon >= bbox.west && lon <= bbox.east && lat >= bbox.south && lat <= bbox.north
 }
 
+export function bboxAroundPoint(lat: number, lon: number, radiusKm: number): BBox {
+  return expandBbox({ west: lon, east: lon, south: lat, north: lat }, radiusKm)
+}
+
 export function expandBbox(bbox: BBox, padKm: number): BBox {
   const { lat } = bboxCenter(bbox)
   const dLat = padKm / 110.574

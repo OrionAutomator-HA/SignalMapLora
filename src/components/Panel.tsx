@@ -31,6 +31,8 @@ type Props = {
   onAddExistingCoords: (lat: number, lon: number) => void
   existingPct: number | null
   finalPct: number | null
+  probe: ExistingNode | null
+  coveredKm2: number | null
 }
 
 const PRESETS = {
@@ -102,6 +104,8 @@ export function Panel({
   onAddExistingCoords,
   existingPct,
   finalPct,
+  probe,
+  coveredKm2,
 }: Props) {
   const size = bbox ? bboxSizeKm(bbox) : null
   const tooBig = size ? size.maxSideKm > MAX_REGION_KM : false
@@ -114,9 +118,11 @@ export function Panel({
       <header className="panel-header">
         <h1>Antenna site planner</h1>
         <p>
-          {mode === 'multi'
-            ? 'Draw an area, optionally mark existing repeaters, then place extra masts so the square is covered.'
-            : 'Draw a region, set mast and radio values, then rank high ground by MeshCore-style LoRa land coverage.'}
+          {mode === 'check'
+            ? 'Drop your node on the map to see the land it should reach with these radio settings.'
+            : mode === 'multi'
+              ? 'Draw an area, optionally mark existing repeaters, then place extra masts so the square is covered.'
+              : 'Draw a region, set mast and radio values, then rank high ground by MeshCore-style LoRa land coverage.'}
         </p>
       </header>
 
@@ -139,9 +145,18 @@ export function Panel({
           >
             Multi-repeater
           </button>
+          <button
+            type="button"
+            className={mode === 'check' ? 'chip on' : 'chip'}
+            onClick={() => onMode('check')}
+            disabled={busy}
+          >
+            Coverage check
+          </button>
         </div>
       </section>
 
+      {mode !== 'check' && (
       <section>
         <h2>Region</h2>
         <div className="row">
@@ -171,6 +186,7 @@ export function Panel({
           </p>
         )}
       </section>
+      )}
 
       <section>
         <h2>Radio</h2>
@@ -266,7 +282,7 @@ export function Panel({
             unit="sites"
           />
         </section>
-      ) : (
+      ) : mode === 'multi' ? (
         <section>
           <h2>New repeaters</h2>
           <div className="row">
@@ -357,19 +373,70 @@ export function Panel({
             </>
           )}
         </section>
+      ) : (
+        <section>
+          <h2>Your node</h2>
+          <p className="muted">
+            Tap the map to drop or move the transmitter. You can also type coordinates.
+          </p>
+          <div className="row">
+            <button type="button" onClick={onClear} disabled={busy || (!probe && coveredKm2 === null)}>
+              Clear
+            </button>
+          </div>
+          <div className="coord-row">
+            <input
+              type="number"
+              step="0.00001"
+              placeholder="Lat"
+              value={addLat}
+              onChange={(e) => setAddLat(e.target.value)}
+            />
+            <input
+              type="number"
+              step="0.00001"
+              placeholder="Lon"
+              value={addLon}
+              onChange={(e) => setAddLon(e.target.value)}
+            />
+            <button
+              type="button"
+              onClick={() => {
+                const lat = Number(addLat)
+                const lon = Number(addLon)
+                if (!Number.isFinite(lat) || !Number.isFinite(lon)) return
+                onAddExistingCoords(lat, lon)
+                setAddLat('')
+                setAddLon('')
+              }}
+            >
+              Place
+            </button>
+          </div>
+          {probe && (
+            <p className="muted">
+              TX {probe.lat.toFixed(5)}, {probe.lon.toFixed(5)}
+            </p>
+          )}
+        </section>
       )}
 
       <button
         type="button"
         className="primary search-btn"
         onClick={onSearch}
-        disabled={busy || !bbox || tooBig}
+        disabled={
+          busy ||
+          (mode === 'check' ? !probe : !bbox || tooBig)
+        }
       >
         {busy
           ? 'Working…'
-          : mode === 'multi'
-            ? `Plan ${repeaterCount} new repeaters`
-            : `Find ${siteCount} best sites`}
+          : mode === 'check'
+            ? 'Show coverage'
+            : mode === 'multi'
+              ? `Plan ${repeaterCount} new repeaters`
+              : `Find ${siteCount} best sites`}
       </button>
       {progress && <p className="muted">{progress}</p>}
       {error && <p className="warn">{error}</p>}
@@ -379,8 +446,11 @@ export function Panel({
           {finalPct?.toFixed(0)}%.
         </p>
       )}
+      {mode === 'check' && coveredKm2 !== null && (
+        <p className="muted">Predicted land coverage about {coveredKm2.toFixed(1)} km².</p>
+      )}
 
-      {sites.length > 0 && (
+      {sites.length > 0 && mode !== 'check' && (
         <section>
           <h2>{mode === 'multi' ? `New repeaters (${sites.length})` : `Top ${sites.length} sites`}</h2>
           <ul className="results">
@@ -408,9 +478,9 @@ export function Panel({
       )}
 
       <p className="footnote">
-        Pins stay inside the dashed square. Multi-repeater uses a greedy fill: existing
-        nodes first, then new masts that cover the most remaining gaps. DEM is ground
-        elevation, not buildings.
+        {mode === 'check'
+          ? 'Heatmap is terrain line-of-sight with 4/3 Earth radius plus free-space path loss, out to the radio’s link budget. DEM is ground elevation, not buildings or trees.'
+          : 'Pins stay inside the dashed square. Multi-repeater uses a greedy fill: existing nodes first, then new masts that cover the most remaining gaps. DEM is ground elevation, not buildings.'}
       </p>
     </aside>
   )
