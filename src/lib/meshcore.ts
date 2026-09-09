@@ -199,14 +199,27 @@ export class MeshCoreSession {
   }
 }
 
-function serialSupported(): boolean {
-  return typeof navigator !== 'undefined' && 'serial' in navigator
+export function usbSerialBlockReason(): string | null {
+  if (typeof window === 'undefined' || typeof navigator === 'undefined') {
+    return 'USB is only available in a desktop browser.'
+  }
+  const ua = navigator.userAgent
+  const mobile = /Android|iPhone|iPad|iPod|Mobile/i.test(ua)
+  if (mobile) {
+    return 'USB serial does not work in phone browsers (including Edge on Android/iPhone). Plug the radio into a Windows or Mac PC and open this site in desktop Edge or Chrome.'
+  }
+  if (!window.isSecureContext) {
+    return 'USB serial is blocked on insecure HTTP. Use https://lora.michaeljcl.com — not http:// and not a raw IP:port URL.'
+  }
+  if (!('serial' in navigator)) {
+    return 'This page has no Web Serial API. Use desktop Chrome or Edge (not IE mode, not iOS Edge). Firefox and Safari cannot talk to the radio from a web page.'
+  }
+  return null
 }
 
 export async function importRepeatersOverUsb(): Promise<ExistingNode[]> {
-  if (!serialSupported()) {
-    throw new Error('USB needs Chrome or Edge with Web Serial. Firefox and Safari cannot talk to the radio from this page.')
-  }
+  const blocked = usbSerialBlockReason()
+  if (blocked) throw new Error(blocked)
   const nav = navigator as Navigator & {
     serial: {
       requestPort: () => Promise<{
@@ -217,7 +230,18 @@ export async function importRepeatersOverUsb(): Promise<ExistingNode[]> {
       }>
     }
   }
-  const port = await nav.serial.requestPort()
+  let port: Awaited<ReturnType<typeof nav.serial.requestPort>>
+  try {
+    port = await nav.serial.requestPort()
+  } catch (err) {
+    if (err instanceof DOMException && err.name === 'NotFoundError') throw err
+    if (err instanceof DOMException && (err.name === 'SecurityError' || err.name === 'NotAllowedError')) {
+      throw new Error(
+        'The browser blocked serial access. Open https://lora.michaeljcl.com in desktop Edge or Chrome (not a phone, not http://IP:5174) and allow the USB device when asked.',
+      )
+    }
+    throw err
+  }
   await port.open({ baudRate: 115200 })
   const reader = port.readable?.getReader()
   const writable = port.writable

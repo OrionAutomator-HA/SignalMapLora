@@ -26,6 +26,12 @@ function meshcoreBridgePlugin(): Plugin {
 
 export default defineConfig({
   plugins: [react(), meshcoreBridgePlugin()],
-  server: { proxy: demProxy },
-  preview: { proxy: demProxy },
+  server: {
+    proxy: demProxy,
+    headers: { 'Permissions-Policy': 'serial=(self)' },
+  },
+  preview: {
+    proxy: demProxy,
+    headers: { 'Permissions-Policy': 'serial=(self)' },
+  },
 })

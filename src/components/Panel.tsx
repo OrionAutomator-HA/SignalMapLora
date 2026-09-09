@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import type { BBox, ExistingNode, PlanMode, RadioParams, RankedSite } from '../types'
 import { MAX_REGION_KM, WARN_REGION_KM, bboxSizeKm } from '../lib/geo'
+import { usbSerialBlockReason } from '../lib/meshcore'
 
 type Props = {
   radio: RadioParams
@@ -116,6 +117,7 @@ export function Panel({
   const size = bbox ? bboxSizeKm(bbox) : null
   const tooBig = size ? size.maxSideKm > MAX_REGION_KM : false
   const warn = size ? size.maxSideKm > WARN_REGION_KM : false
+  const usbBlock = usbSerialBlockReason()
   const [addLat, setAddLat] = useState('')
   const [addLon, setAddLon] = useState('')
   const [meshHost, setMeshHost] = useState('')
@@ -455,6 +457,7 @@ export function Panel({
               Clear
             </button>
           </div>
+          {usbBlock && <p className="warn">{usbBlock}</p>}
           <p className="muted">Or companion_radio_wifi IPv4 on this server’s LAN (port 5000):</p>
           <div className="coord-row">
             <input
