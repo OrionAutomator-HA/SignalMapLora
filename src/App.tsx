@@ -10,6 +10,7 @@ import {
   cellAreaKm2,
   chooseGridShape,
   expandBbox,
+  gridMaxSide,
   MAX_COVERAGE_PAD_KM,
   MAX_MESH_SPAN_KM,
   MAX_REGION_KM,
@@ -94,8 +95,8 @@ export default function App() {
     const padKm = Math.min(maxRangeM(radio) / 1000, MAX_COVERAGE_PAD_KM)
     const coverageBbox = expandBbox(search, padKm)
     const coverSize = bboxSizeKm(coverageBbox)
-    const coarseShape = chooseGridShape(coverageBbox, coverSize.maxSideKm > 90 ? 80 : 96)
-    const fineShape = chooseGridShape(coverageBbox, coverSize.maxSideKm > 90 ? 128 : 160)
+    const coarseShape = chooseGridShape(coverageBbox, gridMaxSide(coverSize.maxSideKm, 'coarse'))
+    const fineShape = chooseGridShape(coverageBbox, gridMaxSide(coverSize.maxSideKm, 'fine'))
     const fine = await loadDemGrid(
       coverageBbox,
       fineShape.cols,
@@ -140,8 +141,7 @@ export default function App() {
         `Those nodes span more than ${MAX_MESH_SPAN_KM} km including radio range. Import a smaller set, or lower TX power so the map window shrinks.`,
       )
     }
-    const maxSide =
-      coverSize.maxSideKm > 500 ? 64 : coverSize.maxSideKm > 200 ? 80 : coverSize.maxSideKm > 90 ? 96 : 144
+    const maxSide = gridMaxSide(coverSize.maxSideKm, 'fine')
     const fineShape = chooseGridShape(coverageBbox, maxSide)
     const fine = await loadDemGrid(
       coverageBbox,
@@ -219,7 +219,7 @@ export default function App() {
       const padKm = Math.min(maxRangeM(radio) / 1000, MAX_COVERAGE_PAD_KM)
       const coverageBbox = bboxAroundPoint(probe.lat, probe.lon, padKm)
       const coverSize = bboxSizeKm(coverageBbox)
-      const fineShape = chooseGridShape(coverageBbox, coverSize.maxSideKm > 90 ? 128 : 160)
+      const fineShape = chooseGridShape(coverageBbox, gridMaxSide(coverSize.maxSideKm, 'fine'))
       const fine = await loadDemGrid(
         coverageBbox,
         fineShape.cols,

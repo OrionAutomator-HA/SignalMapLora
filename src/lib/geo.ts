@@ -1,11 +1,24 @@
 import type { BBox, DemGrid } from '../types'
 
 export const EARTH_RADIUS_M = 6_371_000
-export const MAX_REGION_KM = 80
-export const WARN_REGION_KM = 50
+export const MAX_REGION_KM = 1200
+export const WARN_REGION_KM = 200
 export const MAX_COVERAGE_PAD_KM = 50
 /** Mesh import union-coverage window, including radio-range padding. */
 export const MAX_MESH_SPAN_KM = 1200
+
+export function gridMaxSide(maxSideKm: number, kind: 'fine' | 'coarse'): number {
+  if (kind === 'coarse') {
+    if (maxSideKm > 500) return 48
+    if (maxSideKm > 200) return 64
+    if (maxSideKm > 90) return 80
+    return 96
+  }
+  if (maxSideKm > 500) return 64
+  if (maxSideKm > 200) return 80
+  if (maxSideKm > 90) return 96
+  return 160
+}
 
 export function clamp(n: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, n))
