@@ -1,5 +1,6 @@
 import react from '@vitejs/plugin-react'
-import { defineConfig } from 'vite'
+import { defineConfig, type Plugin, type PreviewServer, type ViteDevServer } from 'vite'
+import { attachMeshcoreBridge } from './server/meshcore-bridge.mjs'
 
 const demProxy = {
   '/dem': {
@@ -10,8 +11,21 @@ const demProxy = {
   },
 }
 
+function meshcoreBridgePlugin(): Plugin {
+  const hook = (server: ViteDevServer | PreviewServer) => {
+    return () => {
+      if (server.httpServer) attachMeshcoreBridge(server.httpServer)
+    }
+  }
+  return {
+    name: 'meshcore-bridge',
+    configureServer: hook,
+    configurePreviewServer: hook,
+  }
+}
+
 export default defineConfig({
-  plugins: [react()],
+  plugins: [react(), meshcoreBridgePlugin()],
   server: { proxy: demProxy },
   preview: { proxy: demProxy },
 })

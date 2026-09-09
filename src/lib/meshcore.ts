@@ -290,16 +290,7 @@ async function openDirectTcp(host: string, port: number): Promise<TcpOpened | nu
   }
 }
 
-export async function importRepeatersOverIp(host: string, port: number): Promise<ExistingNode[]> {
-  const h = host.trim()
-  const p = Math.min(65535, Math.max(1, Math.round(port) || 5000))
-  if (!h) throw new Error('Enter the radio IP address')
-  const tcp = await openDirectTcp(h, p)
-  if (!tcp) {
-    throw new Error(
-      'This browser cannot open a raw TCP socket to a companion radio (default port 5000). Use USB in Chrome/Edge, or a Chromium build with Direct Sockets. Wi‑Fi companion firmware is TCP, not HTTP.',
-    )
-  }
+async function runSessionOnTcp(tcp: TcpOpened): Promise<ExistingNode[]> {
   const reader = tcp.readable.getReader()
   const session = new MeshCoreSession({
     write: async (bytes) => {
@@ -337,4 +328,79 @@ export async function importRepeatersOverIp(host: string, port: number): Promise
     await session.close()
     await pump.catch(() => undefined)
   }
+}
+
+async function openSiteTcpBridge(host: string, port: number): Promise<TcpOpened> {
+  const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+  const ws = new WebSocket(`${proto}//${window.location.host}/meshcore-bridge`)
+  ws.binaryType = 'arraybuffer'
+  const incoming = new TransformStream<Uint8Array, Uint8Array>()
+  const inWriter = incoming.writable.getWriter()
+
+  await new Promise<void>((resolve, reject) => {
+    const timer = window.setTimeout(() => {
+      ws.close()
+      reject(new Error('Timed out connecting through this site to the radio'))
+    }, 15000)
+    ws.addEventListener('error', () => {
+      window.clearTimeout(timer)
+      reject(
+        new Error(
+          'Could not open the MeshCore TCP helper on this site. Try USB, or hard-refresh after a server update.',
+        ),
+      )
+    })
+    ws.addEventListener('open', () => {
+      ws.send(JSON.stringify({ host, port }))
+    })
+    ws.addEventListener('message', (event: MessageEvent) => {
+      if (typeof event.data === 'string') {
+        let msg: { ok?: boolean; error?: string }
+        try {
+          msg = JSON.parse(event.data) as { ok?: boolean; error?: string }
+        } catch {
+          return
+        }
+        if (msg.error) {
+          window.clearTimeout(timer)
+          ws.close()
+          reject(new Error(msg.error))
+          return
+        }
+        if (msg.ok) {
+          window.clearTimeout(timer)
+          resolve()
+        }
+        return
+      }
+      void inWriter.write(new Uint8Array(event.data as ArrayBuffer))
+    })
+    ws.addEventListener('close', () => {
+      void inWriter.close()
+    })
+  })
+
+  return {
+    readable: incoming.readable,
+    writable: new WritableStream<Uint8Array>({
+      write(chunk) {
+        if (ws.readyState !== WebSocket.OPEN) throw new Error('Radio connection closed')
+        ws.send(chunk.slice())
+      },
+      close() {
+        ws.close()
+      },
+    }),
+    close: async () => {
+      ws.close()
+    },
+  }
+}
+
+export async function importRepeatersOverIp(host: string, port: number): Promise<ExistingNode[]> {
+  const h = host.trim()
+  const p = Math.min(65535, Math.max(1, Math.round(port) || 5000))
+  if (!h) throw new Error('Enter the radio IP address')
+  const tcp = (await openDirectTcp(h, p)) ?? (await openSiteTcpBridge(h, p))
+  return runSessionOnTcp(tcp)
 }

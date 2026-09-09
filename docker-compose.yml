@@ -7,3 +7,14 @@ services:
     ports:
       - "5174:80"
     restart: unless-stopped
+    depends_on:
+      - meshcore-bridge
+
+  meshcore-bridge:
+    container_name: signalmap-meshcore-bridge
+    build:
+      context: .
+      dockerfile: Dockerfile.bridge
+    restart: unless-stopped
+    expose:
+      - "8765"

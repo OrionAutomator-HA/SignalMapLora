@@ -441,9 +441,11 @@ export function Panel({
         <section>
           <h2>Companion radio</h2>
           <p className="experimental">
-            Experimental. Talks to MeshCore companion firmware (USB serial or Wi‑Fi TCP).
-            Only saved repeater and room-server contacts with coordinates are plotted. Coverage
-            is a generic terrain estimate, not a live RF survey.
+            Experimental. Talks to MeshCore companion firmware. USB uses this
+            browser (Chrome/Edge). IP is relayed through this website’s server, so
+            the radio must be on the same network as the server — not only your PC.
+            Only saved repeater and room-server contacts with coordinates are
+            plotted. Coverage is a generic terrain estimate, not a live RF survey.
           </p>
           <div className="row">
             <button type="button" onClick={onUsbImport} disabled={busy}>
@@ -453,7 +455,7 @@ export function Panel({
               Clear
             </button>
           </div>
-          <p className="muted">Or IP of a companion_radio_wifi node (default port 5000):</p>
+          <p className="muted">Or companion_radio_wifi IPv4 on this server’s LAN (port 5000):</p>
           <div className="coord-row">
             <input
               type="text"
@@ -564,7 +566,7 @@ export function Panel({
 
       <p className="footnote">
         {mode === 'mesh'
-          ? 'Experimental MeshCore import uses the companion serial protocol over USB (Web Serial) or raw TCP when the browser allows it. Repeaters without lat/lon in the contact list are skipped. DEM is ground elevation, not buildings or trees.'
+          ? 'Experimental MeshCore import: USB is Web Serial in this browser. IP uses a helper on the site host to open TCP (private IPv4 only). Repeaters without lat/lon are skipped. DEM is ground elevation, not buildings or trees.'
           : mode === 'check'
             ? 'Heatmap is terrain line-of-sight with 4/3 Earth radius plus free-space path loss, out to the radio’s link budget. DEM is ground elevation, not buildings or trees.'
             : 'Pins stay inside the dashed square. Multi-repeater uses a greedy fill: existing nodes first, then new masts that cover the most remaining gaps. DEM is ground elevation, not buildings.'}
