@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import type { BBox, ExistingNode, PlanMode, RadioParams, RankedSite } from '../types'
 import { MAX_REGION_KM, WARN_REGION_KM, bboxSizeKm } from '../lib/geo'
-import { usbSerialBlockReason } from '../lib/meshcore'
+import { HEATMAP_SPAN_DB, type OverlayStyle } from '../lib/overlay'
 
 type Props = {
   radio: RadioParams
@@ -38,6 +38,9 @@ type Props = {
   onUsbImport: () => void
   onIpImport: (host: string, port: number, viaServerLan: boolean) => void
   helperCommand: string | null
+  overlayStyle: OverlayStyle
+  onOverlayStyle: (style: OverlayStyle) => void
+  overlayCutoffDbm: number
 }
 
 const PRESETS = {
@@ -115,6 +118,9 @@ export function Panel({
   onUsbImport,
   onIpImport,
   helperCommand,
+  overlayStyle,
+  onOverlayStyle,
+  overlayCutoffDbm,
 }: Props) {
   const size = bbox ? bboxSizeKm(bbox) : null
   const tooBig = size ? size.maxSideKm > MAX_REGION_KM : false
@@ -278,6 +284,48 @@ export function Panel({
           step={1}
           unit="dBm"
         />
+      </section>
+
+      <section>
+        <h2>Overlay</h2>
+        <div className="row">
+          {(['red', 'green', 'blue'] as const).map((color) => (
+            <button
+              key={color}
+              type="button"
+              className={overlayStyle === color ? 'chip on' : 'chip'}
+              onClick={() => onOverlayStyle(color)}
+            >
+              <span className={`swatch swatch-${color}`} />
+              {color === 'red' ? 'Red' : color === 'green' ? 'Green' : 'Blue'}
+            </button>
+          ))}
+          {mode === 'multi' && (
+            <button
+              type="button"
+              className={overlayStyle === 'heatmap' ? 'chip on' : 'chip'}
+              onClick={() => onOverlayStyle('heatmap')}
+            >
+              Heatmap
+            </button>
+          )}
+        </div>
+        {mode === 'multi' && overlayStyle === 'heatmap' && (
+          <div className="heat-legend">
+            <span>
+              {overlayCutoffDbm} dBm
+            </span>
+            <div className="heat-bar" aria-hidden />
+            <span>
+              {overlayCutoffDbm + HEATMAP_SPAN_DB} dBm
+            </span>
+          </div>
+        )}
+        <p className="muted">
+          {mode === 'multi' && overlayStyle === 'heatmap'
+            ? 'Heatmap is estimated RSSI from the strongest mast with line of sight (free-space), not a live survey.'
+            : 'Single-colour overlay marks predicted coverage. Heatmap is available in multi-repeater after a plan.'}
+        </p>
       </section>
 
       {mode === 'rank' ? (

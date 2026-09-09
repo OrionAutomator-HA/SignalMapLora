@@ -55,6 +55,7 @@ export type WorkerResponse =
       existingPct: number
       finalPct: number
       coveredKm2: number
+      rssi: Float32Array
     }
   | {
       type: 'coverage'
@@ -62,5 +63,6 @@ export type WorkerResponse =
       mask: Uint8Array
       cols: number
       rows: number
+      rssi?: Float32Array
     }
   | { type: 'error'; jobId: number; message: string }

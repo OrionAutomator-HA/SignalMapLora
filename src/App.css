@@ -81,11 +81,57 @@ button.primary,
 
 .chip {
   flex: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
 }
 
 .chip.on {
   background: #2a3348;
   border-color: #3ecf8e;
+}
+
+.swatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  flex-shrink: 0;
+}
+
+.swatch-red {
+  background: #dc3830;
+}
+
+.swatch-green {
+  background: #2ec47a;
+}
+
+.swatch-blue {
+  background: #2876e0;
+}
+
+.heat-legend {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 8px 0 4px;
+  font-size: 0.75rem;
+  color: #9aa3b5;
+}
+
+.heat-bar {
+  flex: 1;
+  height: 8px;
+  border-radius: 4px;
+  background: linear-gradient(
+    90deg,
+    #2030b4 0%,
+    #00b4dc 25%,
+    #28c846 50%,
+    #fad228 75%,
+    #e6281e 100%
+  );
 }
 
 .field {

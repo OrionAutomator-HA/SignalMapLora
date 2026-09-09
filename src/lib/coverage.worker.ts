@@ -1,4 +1,4 @@
-import { fillCoverageMask, orMaskInto } from './coverage'
+import { fillBestRssi, fillCoverageMask, maskFromRssi } from './coverage'
 import { planMultiRepeaters } from './optimizer'
 import { collectCandidates, rankCandidates, refineTopSites } from './search'
 import type { WorkerRequest, WorkerResponse } from './workerMessages'
@@ -97,27 +97,29 @@ self.onmessage = (event: MessageEvent<WorkerRequest>) => {
           } satisfies WorkerResponse)
         },
       )
-      const mask = new Uint8Array(msg.fine.cols * msg.fine.rows)
-      const scratch = new Uint8Array(msg.fine.cols * msg.fine.rows)
-      for (const node of msg.existing) {
-        fillCoverageMask(msg.fine, node.lat, node.lon, msg.radio, scratch)
-        orMaskInto(mask, scratch)
-      }
-      for (const site of plan.sites) {
-        fillCoverageMask(msg.fine, site.lat, site.lon, msg.radio, scratch)
-        orMaskInto(mask, scratch)
-      }
-      self.postMessage({
-        type: 'multiResult',
-        jobId,
-        sites: plan.sites,
-        mask,
-        cols: msg.fine.cols,
-        rows: msg.fine.rows,
-        existingPct: plan.existingPct,
-        finalPct: plan.finalPct,
-        coveredKm2: plan.coveredKm2,
-      } satisfies WorkerResponse)
+      const rssi = new Float32Array(msg.fine.cols * msg.fine.rows)
+      fillBestRssi(
+        msg.fine,
+        [...msg.existing, ...plan.sites].map((n) => ({ lat: n.lat, lon: n.lon })),
+        msg.radio,
+        rssi,
+      )
+      const mask = maskFromRssi(rssi)
+      self.postMessage(
+        {
+          type: 'multiResult',
+          jobId,
+          sites: plan.sites,
+          mask,
+          cols: msg.fine.cols,
+          rows: msg.fine.rows,
+          existingPct: plan.existingPct,
+          finalPct: plan.finalPct,
+          coveredKm2: plan.coveredKm2,
+          rssi,
+        } satisfies WorkerResponse,
+        { transfer: [rssi.buffer] },
+      )
       return
     }
 
@@ -134,19 +136,20 @@ self.onmessage = (event: MessageEvent<WorkerRequest>) => {
     }
 
     if (msg.type === 'unionCoverage') {
-      const mask = new Uint8Array(msg.grid.cols * msg.grid.rows)
-      const scratch = new Uint8Array(msg.grid.cols * msg.grid.rows)
-      for (const tx of msg.transmitters) {
-        fillCoverageMask(msg.grid, tx.lat, tx.lon, msg.radio, scratch)
-        orMaskInto(mask, scratch)
-      }
-      self.postMessage({
-        type: 'coverage',
-        jobId,
-        mask,
-        cols: msg.grid.cols,
-        rows: msg.grid.rows,
-      } satisfies WorkerResponse)
+      const rssi = new Float32Array(msg.grid.cols * msg.grid.rows)
+      fillBestRssi(msg.grid, msg.transmitters, msg.radio, rssi)
+      const mask = maskFromRssi(rssi)
+      self.postMessage(
+        {
+          type: 'coverage',
+          jobId,
+          mask,
+          cols: msg.grid.cols,
+          rows: msg.grid.rows,
+          rssi,
+        } satisfies WorkerResponse,
+        { transfer: [rssi.buffer] },
+      )
     }
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Coverage search failed'

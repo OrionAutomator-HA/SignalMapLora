@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { MapView } from './components/MapView'
 import { Panel } from './components/Panel'
 import { downsampleGrid, loadDemGrid } from './lib/dem'
@@ -15,7 +15,7 @@ import {
   MAX_MESH_SPAN_KM,
   MAX_REGION_KM,
 } from './lib/geo'
-import { maskToDataUrl } from './lib/overlay'
+import { paintCoverageOverlay, type OverlayStyle } from './lib/overlay'
 import { importRepeatersOverIp, importRepeatersOverUsb } from './lib/meshcore'
 import type { WorkerRequest, WorkerResponse } from './lib/workerMessages'
 import type { BBox, ExistingNode, PlanMode, RadioParams, RankedSite } from './types'
@@ -55,10 +55,17 @@ export default function App() {
   const [coveredKm2, setCoveredKm2] = useState<number | null>(null)
   const [meshNodes, setMeshNodes] = useState<ExistingNode[]>([])
   const [helperCommand, setHelperCommand] = useState<string | null>(null)
+  const [overlayStyle, setOverlayStyle] = useState<OverlayStyle>('green')
   const fineGridRef = useRef<Awaited<ReturnType<typeof loadDemGrid>> | null>(null)
   const workerRef = useRef<Worker | null>(null)
   const jobRef = useRef(0)
   const existingSeq = useRef(0)
+  const overlayPaintRef = useRef<{
+    mask: Uint8Array
+    cols: number
+    rows: number
+    rssi: Float32Array | null
+  } | null>(null)
 
   const worker = useMemo(() => {
     const w = new Worker(new URL('./lib/coverage.worker.ts', import.meta.url), {
@@ -68,6 +75,34 @@ export default function App() {
     return w
   }, [])
 
+  function paintOverlay(
+    mask: Uint8Array,
+    cols: number,
+    rows: number,
+    rssi: Float32Array | null,
+    bounds: BBox,
+    style: OverlayStyle = overlayStyle,
+  ) {
+    overlayPaintRef.current = { mask, cols, rows, rssi }
+    setOverlayBounds(bounds)
+    setOverlayUrl(paintCoverageOverlay(mask, cols, rows, style, rssi, radio.cutoffDbm))
+  }
+
+  useEffect(() => {
+    const layer = overlayPaintRef.current
+    if (!layer) return
+    setOverlayUrl(
+      paintCoverageOverlay(
+        layer.mask,
+        layer.cols,
+        layer.rows,
+        overlayStyle,
+        layer.rssi,
+        radio.cutoffDbm,
+      ),
+    )
+  }, [overlayStyle, radio.cutoffDbm])
+
   function resetResults() {
     setSites([])
     setSelectedRank(null)
@@ -76,6 +111,7 @@ export default function App() {
     setExistingPct(null)
     setFinalPct(null)
     setCoveredKm2(null)
+    overlayPaintRef.current = null
     fineGridRef.current = null
   }
 
@@ -83,6 +119,7 @@ export default function App() {
     if (mode === 'check') {
       setProbe({ id: 'tx', lat, lon })
       setCoveredKm2(null)
+      overlayPaintRef.current = null
       setOverlayUrl(null)
       setOverlayBounds(null)
       return
@@ -168,8 +205,7 @@ export default function App() {
       if (result.mask[i]) covered++
     }
     const km2 = covered * cellAreaKm2(fine)
-    setOverlayBounds(coverageBbox)
-    setOverlayUrl(maskToDataUrl(result.mask, result.cols, result.rows))
+    paintOverlay(result.mask, result.cols, result.rows, result.rssi ?? null, coverageBbox)
     setCoveredKm2(km2)
     setProgress(
       `Imported ${nodes.length} node${nodes.length === 1 ? '' : 's'} · about ${km2.toFixed(1)} km² combined`,
@@ -180,6 +216,7 @@ export default function App() {
     setBusy(true)
     setError(null)
     setSites([])
+    overlayPaintRef.current = null
     setOverlayUrl(null)
     setCoveredKm2(null)
     setProgress('Talking to MeshCore radio…')
@@ -213,6 +250,7 @@ export default function App() {
     setSites([])
     setSelectedRank(null)
     setCoveredKm2(null)
+    overlayPaintRef.current = null
     setOverlayUrl(null)
     setProgress('Loading terrain…')
     try {
@@ -246,8 +284,7 @@ export default function App() {
         if (result.mask[i]) covered++
       }
       const km2 = covered * cellAreaKm2(fine)
-      setOverlayBounds(coverageBbox)
-      setOverlayUrl(maskToDataUrl(result.mask, result.cols, result.rows))
+      paintOverlay(result.mask, result.cols, result.rows, result.rssi ?? null, coverageBbox)
       setCoveredKm2(km2)
       setProgress(`Predicted reach about ${km2.toFixed(1)} km²`)
     } catch (err) {
@@ -303,8 +340,13 @@ export default function App() {
         const result = await pending
         setSites(result.sites)
         setSelectedRank(result.sites[0]?.rank ?? null)
-        setOverlayBounds(coverageBbox)
-        setOverlayUrl(maskToDataUrl(result.mask, result.cols, result.rows))
+        paintOverlay(
+          result.mask,
+          result.cols,
+          result.rows,
+          result.rssi,
+          coverageBbox,
+        )
         setExistingPct(result.existingPct)
         setFinalPct(result.finalPct)
         setProgress(
@@ -327,12 +369,13 @@ export default function App() {
         const result = await pending
         setSites(result.sites)
         setSelectedRank(result.sites[0]?.rank ?? null)
-        setOverlayBounds(coverageBbox)
-        setOverlayUrl(
-          result.sites.length
-            ? maskToDataUrl(result.mask, result.cols, result.rows)
-            : null,
-        )
+        if (result.sites.length) {
+          paintOverlay(result.mask, result.cols, result.rows, null, coverageBbox)
+        } else {
+          overlayPaintRef.current = null
+          setOverlayUrl(null)
+          setOverlayBounds(coverageBbox)
+        }
         setProgress(
           result.sites[0]
             ? `Best site covers ${result.sites[0].coveredKm2.toFixed(1)} km² (${result.sites[0].coveredPct.toFixed(0)}%)`
@@ -382,7 +425,13 @@ export default function App() {
         worker.postMessage(payload)
       }
       const result = await pending
-      setOverlayUrl(maskToDataUrl(result.mask, result.cols, result.rows))
+      const bounds = {
+        west: grid.west,
+        south: grid.south,
+        east: grid.east,
+        north: grid.north,
+      }
+      paintOverlay(result.mask, result.cols, result.rows, result.rssi ?? null, bounds)
       setProgress(
         mode === 'multi'
           ? `Combined coverage ${finalPct?.toFixed(0) ?? '—'}% of the square`
@@ -434,6 +483,7 @@ export default function App() {
           setPlacingExisting(next === 'check')
           if (next !== 'check') setProbe(null)
           if (next !== 'mesh') setMeshNodes([])
+          if (next !== 'multi' && overlayStyle === 'heatmap') setOverlayStyle('green')
         }}
         repeaterCount={repeaterCount}
         onRepeaterCount={(n) => setRepeaterCount(Math.min(12, Math.max(1, Math.round(n) || 1)))}
@@ -468,6 +518,9 @@ export default function App() {
           )
         }
         helperCommand={helperCommand}
+        overlayStyle={overlayStyle}
+        onOverlayStyle={setOverlayStyle}
+        overlayCutoffDbm={radio.cutoffDbm}
       />
       <MapView
         drawing={drawing}

@@ -80,6 +80,35 @@ export type CoverageScore = {
   coveredPct: number
 }
 
+function predictedRssi(
+  grid: DemGrid,
+  txCol: number,
+  txRow: number,
+  rxCol: number,
+  rxRow: number,
+  radio: RadioParams,
+  mPerCol: number,
+  mPerRow: number,
+  twoKR: number,
+  rangeM: number,
+): number | null {
+  const distM = Math.hypot((rxCol - txCol) * mPerCol, (rxRow - txRow) * mPerRow)
+  if (distM < 2) return radio.txPowerDbm + radio.txGainDbi + radio.rxGainDbi
+  if (distM > rangeM) return null
+  const rssi =
+    radio.txPowerDbm +
+    radio.txGainDbi +
+    radio.rxGainDbi -
+    fsplDbm(distM, radio.frequencyMhz)
+  if (rssi < radio.cutoffDbm) return null
+  const txAmsl = sampleElev(grid, txCol, txRow) + radio.txHeightM
+  const rxAmsl = sampleElev(grid, rxCol, rxRow) + radio.rxHeightM
+  if (!pathClear(grid, txCol, txRow, rxCol, rxRow, txAmsl, rxAmsl, mPerCol, mPerRow, twoKR)) {
+    return null
+  }
+  return rssi
+}
+
 function linkCovered(
   grid: DemGrid,
   txCol: number,
@@ -92,18 +121,7 @@ function linkCovered(
   twoKR: number,
   rangeM: number,
 ): boolean {
-  const distM = Math.hypot((rxCol - txCol) * mPerCol, (rxRow - txRow) * mPerRow)
-  if (distM < 2) return true
-  if (distM > rangeM) return false
-  const rssi =
-    radio.txPowerDbm +
-    radio.txGainDbi +
-    radio.rxGainDbi -
-    fsplDbm(distM, radio.frequencyMhz)
-  if (rssi < radio.cutoffDbm) return false
-  const txAmsl = sampleElev(grid, txCol, txRow) + radio.txHeightM
-  const rxAmsl = sampleElev(grid, rxCol, rxRow) + radio.rxHeightM
-  return pathClear(grid, txCol, txRow, rxCol, rxRow, txAmsl, rxAmsl, mPerCol, mPerRow, twoKR)
+  return predictedRssi(grid, txCol, txRow, rxCol, rxRow, radio, mPerCol, mPerRow, twoKR, rangeM) != null
 }
 
 export function scoreSearchArea(
@@ -199,4 +217,48 @@ export function fillCoverageMask(
         : 0
     }
   }
+}
+
+export function fillBestRssi(
+  grid: DemGrid,
+  transmitters: { lat: number; lon: number }[],
+  radio: RadioParams,
+  rssi: Float32Array,
+): void {
+  rssi.fill(Number.NaN)
+  const { mPerCol, mPerRow } = cellMeters(grid)
+  const twoKR = 2 * radio.kFactor * EARTH_RADIUS_M
+  const rangeM = maxRangeM(radio)
+  for (const tx of transmitters) {
+    const origin = latLonToColRowFloat(grid, tx.lat, tx.lon)
+    for (let r = 0; r < grid.rows; r++) {
+      for (let c = 0; c < grid.cols; c++) {
+        const i = r * grid.cols + c
+        const { lat, lon } = colRowToLatLon(grid, c, r)
+        const rx = latLonToColRowFloat(grid, lat, lon)
+        const value = predictedRssi(
+          grid,
+          origin.col,
+          origin.row,
+          rx.col,
+          rx.row,
+          radio,
+          mPerCol,
+          mPerRow,
+          twoKR,
+          rangeM,
+        )
+        if (value == null) continue
+        if (!Number.isFinite(rssi[i]) || value > rssi[i]) rssi[i] = value
+      }
+    }
+  }
+}
+
+export function maskFromRssi(rssi: Float32Array): Uint8Array {
+  const mask = new Uint8Array(rssi.length)
+  for (let i = 0; i < rssi.length; i++) {
+    if (Number.isFinite(rssi[i])) mask[i] = 1
+  }
+  return mask
 }
