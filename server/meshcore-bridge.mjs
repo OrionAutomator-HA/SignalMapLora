@@ -248,6 +248,62 @@ function bindRelay(a, b) {
   pump(b, a)
 }
 
+function pairSocket(session, role, socket) {
+  if (!session || (role !== 'browser' && role !== 'agent')) {
+    handleClient(socket)
+    return
+  }
+  let entry = waiting.get(session)
+  if (!entry) {
+    entry = { browser: null, agent: null, timer: null }
+    entry.timer = setTimeout(() => {
+      const w = waiting.get(session)
+      waiting.delete(session)
+      if (!w) return
+      try {
+        if (w.browser) sendJson(w.browser, { error: 'Timed out waiting for the helper on your PC.' })
+      } catch {
+        /* ignore */
+      }
+      try {
+        if (w.agent) sendJson(w.agent, { error: 'Timed out waiting for the browser. Click Connect IP again.' })
+      } catch {
+        /* ignore */
+      }
+      try {
+        w.browser?.destroy()
+      } catch {
+        /* ignore */
+      }
+      try {
+        w.agent?.destroy()
+      } catch {
+        /* ignore */
+      }
+    }, 180000)
+    waiting.set(session, entry)
+  }
+  const prev = entry[role]
+  if (prev && prev !== socket) {
+    try {
+      prev.destroy()
+    } catch {
+      /* ignore */
+    }
+  }
+  entry[role] = socket
+  socket.on('close', () => {
+    const w = waiting.get(session)
+    if (w && w[role] === socket) w[role] = null
+  })
+  if (entry.browser && entry.agent) {
+    clearTimeout(entry.timer)
+    waiting.delete(session)
+    bindRelay(entry.browser, entry.agent)
+    sendJson(entry.browser, { agentReady: true })
+  }
+}
+
 function handleClient(socket) {
   let buf = Buffer.alloc(0)
   const onData = (chunk) => {
@@ -325,8 +381,10 @@ function handleClient(socket) {
 
 export function attachMeshcoreBridge(httpServer) {
   httpServer.on('upgrade', (req, socket, head) => {
-    const url = req.url || ''
-    if (!url.startsWith('/meshcore-bridge')) return
+    const raw = req.url || ''
+    const qIdx = raw.indexOf('?')
+    const pathname = qIdx >= 0 ? raw.slice(0, qIdx) : raw
+    if (!pathname.startsWith('/meshcore-bridge')) return
     const key = req.headers['sec-websocket-key']
     if (!key || req.headers.upgrade?.toLowerCase() !== 'websocket') {
       socket.destroy()
@@ -341,7 +399,11 @@ export function attachMeshcoreBridge(httpServer) {
         '\r\n',
     )
     if (head && head.length) socket.unshift(head)
-    handleClient(socket)
+    const params = new URLSearchParams(qIdx >= 0 ? raw.slice(qIdx + 1) : '')
+    const role = params.get('role')
+    const session = params.get('session')
+    if (role && session) pairSocket(session, role, socket)
+    else handleClient(socket)
   })
 }
 
@@ -401,8 +463,11 @@ async function connectWsClient(urlStr) {
 }
 
 async function runAgent(url, session) {
-  const socket = await connectWsClient(url)
-  sendJson(socket, { role: 'agent', session }, true)
+  let target = url
+  if (session && !/[?&]session=/.test(target)) {
+    target += (target.includes('?') ? '&' : '?') + `role=agent&session=${encodeURIComponent(session)}`
+  }
+  const socket = await connectWsClient(target)
   startTcpBridge(socket, { masked: true, fromPc: true })
   console.log('meshcore PC helper connected; waiting for the browser to send the radio IP')
   await new Promise((resolve) => socket.on('close', resolve))

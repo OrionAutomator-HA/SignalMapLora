@@ -359,9 +359,15 @@ function siteHelperCanUseServerLan(): boolean {
   return h === 'localhost' || h === '127.0.0.1' || h === '[::1]'
 }
 
+function randomMeshSession(): string {
+  const bytes = new Uint8Array(16)
+  crypto.getRandomValues(bytes)
+  return [...bytes].map((b) => b.toString(16).padStart(2, '0')).join('')
+}
+
 export function meshPcHelperCommand(session: string): string {
   const ps1 = `${window.location.origin}/meshcore-pc-helper.ps1`
-  const ws = `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}/meshcore-bridge`
+  const ws = `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}/meshcore-bridge?role=agent&session=${session}`
   return (
     `$helper = Join-Path $env:TEMP 'meshcore-pc-helper.ps1'; Invoke-WebRequest -UseBasicParsing -OutFile $helper '${ps1}'; Set-ExecutionPolicy -Scope Process Bypass; & $helper -Session '${session}' -Url '${ws}'`
   )
@@ -374,11 +380,16 @@ type BridgeHooks = {
 
 async function openSiteTcpBridge(host: string, port: number, hooks?: BridgeHooks): Promise<TcpOpened> {
   const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-  const ws = new WebSocket(`${proto}//${window.location.host}/meshcore-bridge`)
+  const usePcHelper = !hooks?.viaServerLan && !siteHelperCanUseServerLan()
+  const session = usePcHelper ? randomMeshSession() : ''
+  if (usePcHelper) hooks?.onHelperCommand?.(meshPcHelperCommand(session))
+  const wsUrl = usePcHelper
+    ? `${proto}//${window.location.host}/meshcore-bridge?role=browser&session=${session}`
+    : `${proto}//${window.location.host}/meshcore-bridge`
+  const ws = new WebSocket(wsUrl)
   ws.binaryType = 'arraybuffer'
   const incoming = new TransformStream<Uint8Array, Uint8Array>()
   const inWriter = incoming.writable.getWriter()
-  const usePcHelper = !hooks?.viaServerLan && !siteHelperCanUseServerLan()
 
   await new Promise<void>((resolve, reject) => {
     const timer = window.setTimeout(
@@ -403,8 +414,7 @@ async function openSiteTcpBridge(host: string, port: number, hooks?: BridgeHooks
       )
     })
     ws.addEventListener('open', () => {
-      if (usePcHelper) ws.send(JSON.stringify({ role: 'browser' }))
-      else ws.send(JSON.stringify({ host, port }))
+      if (!usePcHelper) ws.send(JSON.stringify({ host, port }))
     })
     ws.addEventListener('message', (event: MessageEvent) => {
       if (typeof event.data === 'string') {
@@ -423,10 +433,6 @@ async function openSiteTcpBridge(host: string, port: number, hooks?: BridgeHooks
           window.clearTimeout(timer)
           ws.close()
           reject(new Error(msg.error))
-          return
-        }
-        if (msg.session) {
-          hooks?.onHelperCommand?.(meshPcHelperCommand(msg.session))
           return
         }
         if (msg.agentReady) {

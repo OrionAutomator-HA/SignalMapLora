@@ -7,7 +7,12 @@ $ErrorActionPreference = 'Stop'
 $ws = [System.Net.WebSockets.ClientWebSocket]::new()
 $ct = [Threading.CancellationToken]::None
 Write-Host "Connecting helper to $Url ..."
-$ws.ConnectAsync([Uri]$Url, $ct).GetAwaiter().GetResult()
+if ($Url -notmatch '[?&]session=') {
+  $join = '?'
+  if ($Url.Contains('?')) { $join = '&' }
+  $Url = "$Url${join}role=agent&session=$Session"
+}
+[void]$ws.ConnectAsync([Uri]$Url, $ct).GetAwaiter().GetResult()
 
 function Send-Ws([byte[]]$bytes, [Net.WebSockets.WebSocketMessageType]$type) {
   $seg = [ArraySegment[byte]]::new($bytes)
@@ -18,7 +23,6 @@ function Send-Text([string]$text) {
   Send-Ws ([Text.Encoding]::UTF8.GetBytes($text)) ([Net.WebSockets.WebSocketMessageType]::Text)
 }
 
-Send-Text (@{ role = 'agent'; session = $Session } | ConvertTo-Json -Compress)
 Write-Host 'Helper is waiting for the browser. Leave this window open.'
 
 $tcp = $null
